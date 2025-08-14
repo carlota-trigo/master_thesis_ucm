@@ -93,6 +93,39 @@ def normalize_localization(value) -> str:
         return ""
     return str(value).strip().lower()
 
+# -------------------- ITOBOS helpers --------------------
+
+def has_valid_bbox(ann) -> bool:
+    bbox = ann.get("bbox")
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return False
+    try:
+        _, _, w, h = bbox
+        return float(w) > 0 and float(h) > 0
+    except Exception:
+        return False
+
+def itobos_healthy_filenames(raw_dir: str) -> Set[str]:
+    """
+    Return basenames of ITOBOS train images that have 0 valid bboxes.
+    IMPORTANT: normalize to basenames to match disk filenames.
+    """
+    labels_json = os.path.join(raw_dir, "ITOBOS2024", "train", "labels.json")
+    if not os.path.isfile(labels_json):
+        print("[INFO] ITOBOS: train/labels.json not found → no ITOBOS images will be copied.")
+        return set()
+    with open(labels_json, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    images = {img["id"]: img["file_name"] for img in data.get("images", [])}
+    counts = {iid: 0 for iid in images}
+    for ann in data.get("annotations", []):
+        iid = ann.get("image_id")
+        if iid in counts and has_valid_bbox(ann):
+            counts[iid] += 1
+    # Normalize to basenames
+    healthy_basenames = {os.path.basename(images[iid]) for iid, c in counts.items() if c == 0}
+    return healthy_basenames
+
 # Unified diagnosis code set (uppercase codes)
 CANON_DIAG_CODES: Set[str] = {
     # malignant
