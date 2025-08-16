@@ -13,7 +13,7 @@ Builds data_clean/ from datasets in data_raw/.
 - Safe filename collision handling, including against existing files from previous runs
 
 Writes data_clean/metadata.csv with columns:
-    image_id, origin_dataset, lesion, diagnosis, localization, age, sex
+    image_id, origin_dataset, lesion_type, diagnosis, body_region, age, gender
 
 Origin dataset priority when identical files appear across datasets (same content hash):
     HAM1000 → ITOBOS2024 → MIL10K → ISIC2020 → ISIC2019
@@ -32,6 +32,8 @@ from typing import Dict, List, Optional, Tuple, Set
 import pandas as pd
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+MAL_CANON = {"MEL","BCC","AKIEC","SCC","SCCKA","MAL_OTH"}
+BEN_CANON = {"NV","BKL","DF","VASC","BEN_OTH","INF"}
 
 # -------------------- Utilities --------------------
 
@@ -72,7 +74,7 @@ def _is_missing(v) -> bool:
         pass
     if isinstance(v, str):
         s = v.strip().lower()
-        if s in {"", "na", "n/a", "none", "null", "Unknown", "unknown", "<na>"}:
+        if s in {"", "na", "n/a", "none", "null", "unknown", "<na>"}:
             return True
     return False
 
@@ -93,7 +95,7 @@ def normalize_age(value) -> str:
     i = int(round(f))
     return str(i) if 0 <= i <= 120 else "not_provided"
 
-def normalize_sex(value) -> str:
+def normalize_gender(value) -> str:
     if _is_missing(value): return "not_provided"
     s = str(value).strip().lower()
     if s in {"m","male","man"}: return "male"
@@ -226,7 +228,6 @@ def filter_milk10k_il_far_view(paths: List[str]) -> List[str]:
     return sorted(kept)
 
 # -------------------- Dataset readers --------------------
-# -------------------- Dataset readers --------------------
 
 def ham1000_meta(raw_dir: str) -> Dict[str, Dict]:
     d = os.path.join(raw_dir, "HAM1000")
@@ -254,7 +255,8 @@ def ham1000_meta(raw_dir: str) -> Dict[str, Dict]:
                  "lesion": lesion,
                  "diagnosis": diagnosis,
                  "age": r.get("age", "not_provided"),
-                 "sex": r.get("sex", "not_provided"),
+                 # source column is "sex" → store as "gender"
+                 "gender": r.get("sex", "not_provided"),
                  "localization": r.get("localization", "not_provided"),
              }
 
@@ -270,7 +272,7 @@ def ham1000_meta(raw_dir: str) -> Dict[str, Dict]:
                 imgfile = str(r.get("image_id", "")).strip()
                 dx = str(r.get("dx", "")).strip()
                 age = r.get("age", "")
-                sex = r.get("sex", "")
+                gender = r.get("sex", "")       # read as sex, store as gender
                 loc = r.get("localization", "")
                 if not imgfile or not dx:
                     continue
@@ -282,7 +284,7 @@ def ham1000_meta(raw_dir: str) -> Dict[str, Dict]:
                         "lesion": lesion, 
                         "diagnosis": diagnosis, 
                         "age": age, 
-                        "sex": sex, 
+                        "gender": gender, 
                         "localization": loc
                     }
         elif "lesion_id" in df.columns and "image" in df.columns:
@@ -313,7 +315,7 @@ def ham1000_meta(raw_dir: str) -> Dict[str, Dict]:
                         lesion, diagnosis = map_dx(dx)
                     else:
                         lesion, diagnosis = "unknown", "UNKNOWN"
-                    out[k] = {"lesion": lesion, "diagnosis": diagnosis, "age": "", "sex": "", "localization": ""}
+                    out[k] = {"lesion": lesion, "diagnosis": diagnosis, "age": "", "gender": "", "localization": ""}
         else:
             print(f"[HAM1000] Detected class-based ground truth format")
             key_col = "image" if "image" in df.columns else df.columns[0]
@@ -326,7 +328,7 @@ def ham1000_meta(raw_dir: str) -> Dict[str, Dict]:
                 lesion, diagnosis = map_dx(label)
                 k = s.upper()
                 if k and k not in out:
-                    out[k] = {"lesion": lesion, "diagnosis": diagnosis, "age": "", "sex": "", "localization": ""}
+                    out[k] = {"lesion": lesion, "diagnosis": diagnosis, "age": "", "gender": "", "localization": ""}
 
     return out
 
@@ -368,12 +370,22 @@ def isic2019_meta(raw_dir: str) -> Dict[str, Dict]:
             out.setdefault(k, {})
             out[k].update({
                 "age": r.get("age_approx", "not_provided"),
-                "sex": r.get("sex", "not_provided"),
+                "gender": r.get("sex", "not_provided"),   # source "sex" → stored as "gender"
                 "localization": r.get("anatom_site_general", "not_provided"),
             })
 
     return out
 
+
+def _parse_bm(bm):
+    if bm is None or (isinstance(bm, float) and pd.isna(bm)):
+        return None
+    s = str(bm).strip().lower()
+    if s in {"1","true","t","y","yes","malignant"}:
+        return "malignant"
+    if s in {"0","false","f","n","no","benign"}:
+        return "benign"
+    return None
 
 def isic2020_meta(raw_dir: str) -> Dict[str, Dict]:
     d = os.path.join(raw_dir, "ISIC2020")
@@ -382,6 +394,7 @@ def isic2020_meta(raw_dir: str) -> Dict[str, Dict]:
     gt = gt_v2 if os.path.isfile(gt_v2) else os.path.join(d, "ISIC_2020_Training_GroundTruth.csv")
     if not os.path.isfile(gt):
         return out
+
     df = pd.read_csv(gt)
     key_col = "image_name" if "image_name" in df.columns else df.columns[0]
 
@@ -389,22 +402,29 @@ def isic2020_meta(raw_dir: str) -> Dict[str, Dict]:
         s = os.path.splitext(str(r.get(key_col, "")).strip())[0]
         if not s:
             continue
+
         diag_raw = str(r.get("diagnosis", "")).strip().lower()
         canon_dx = ISIC2020_TO_CANON.get(diag_raw, "UNKNOWN")
-        if canon_dx == "UNKNOWN":
-            lesion = "unknown"
-        else:
-            bm = r.get("benign_malignant", "")
-            try:
-                bm_val = int(bm)
-                lesion = "malignant" if bm_val == 1 else "benign"
-            except Exception:
-                lesion = "malignant" if str(bm).strip().lower() == "malignant" else "benign"
+
+        # 1) PRIMARY: benign_malignant if present
+        lesion = _parse_bm(r.get("benign_malignant"))
+
+        # 2) FALLBACK: infer from diagnosis code
+        if lesion is None:
+            if canon_dx in MAL_CANON:
+                lesion = "malignant"
+            elif canon_dx in BEN_CANON:
+                lesion = "benign"
+            elif canon_dx == "NO_LESION":
+                lesion = "no_lesion"
+            else:
+                lesion = "unknown"
+
         out[s.upper()] = {
             "lesion": lesion,
             "diagnosis": canon_dx,
             "age": r.get("age_approx", "not_provided"),
-            "sex": r.get("sex", "not_provided"),
+            "gender": r.get("sex", "not_provided"),  # source "sex" → stored as "gender"
             "localization": r.get("anatom_site_general_challenge", "not_provided"),
         }
     return out
@@ -512,21 +532,21 @@ def milk10k_meta(raw_dir: str) -> Tuple[Dict[str, Dict], Dict[str, Dict]]:
             meta_il.setdefault(lid.upper(), {})
             meta_il[lid.upper()].update({"lesion": lesion, "diagnosis": diagnosis})
 
-    # Detailed metadata (age/sex/localization; also maps lesion_id <-> isic_id)
+    # Detailed metadata (age/gender/localization; also maps lesion_id <-> isic_id)
     if os.path.isfile(meta_det):
         df = pd.read_csv(meta_det)
         for _, r in df.iterrows():
             lid = str(r.get("lesion_id", "")).strip()
             isic = str(r.get("isic_id", "")).strip()
             age = r.get("age_approx", "not_provided")
-            sex = r.get("sex", "not_provided")
+            gender = r.get("sex", "not_provided")   # source "sex"
             loc = r.get("site", "not_provided")
             if lid:
                 meta_il.setdefault(lid.upper(), {})
-                meta_il[lid.upper()].update({"age": age, "sex": sex, "localization": loc})
+                meta_il[lid.upper()].update({"age": age, "gender": gender, "localization": loc})
             if isic:
                 meta_isic.setdefault(isic.upper(), {})
-                meta_isic[isic.upper()].update({"age": age, "sex": sex, "localization": loc})
+                meta_isic[isic.upper()].update({"age": age, "gender": gender, "localization": loc})
 
     # Fallback general metadata.csv (ISIC_* only)
     if os.path.isfile(meta_csv):
@@ -537,7 +557,7 @@ def milk10k_meta(raw_dir: str) -> Tuple[Dict[str, Dict], Dict[str, Dict]]:
                 continue
             meta_isic.setdefault(isic.upper(), {})
             meta_isic[isic.upper()].setdefault("age", r.get("age_approx", "not_provided"))
-            meta_isic[isic.upper()].setdefault("sex", r.get("sex", "not_provided"))
+            meta_isic[isic.upper()].setdefault("gender", r.get("sex", "not_provided"))  # source "sex"
             meta_isic[isic.upper()].setdefault("localization", r.get("anatom_site_general", "not_provided"))
 
     return meta_isic, meta_il
@@ -654,7 +674,7 @@ def build_dataset(raw_dir: str, out_dir: str, images_only: bool=False, metadata_
         after = len(paths["MIL10K_IL"])
         print(f"[MIL10K_IL] Far-view selection: {before} -> {after}")
 
-    print("[SCAN] Files found per dataset:")
+    print("[SCAN] Files found per dataset]:")
     for k in ["ISIC2020","ISIC2019","HAM1000","MIL10K_ISIC","MIL10K_IL","ITOBOS2024"]:
         print(f"  - {k}: {len(paths.get(k, []))} files")
     print(f"[ITOBOS] healthy (no bbox) candidates: {len(itobos_ok)}")
@@ -678,7 +698,7 @@ def build_dataset(raw_dir: str, out_dir: str, images_only: bool=False, metadata_
         return u
 
     def build_info(origin: str, abs_path: str, fn: str, s: str, s_upper: str) -> Tuple[str,str,str,str,str]:
-        lesion, diagnosis, age, sex, loc = "", "", "not_provided", "not_provided", "not_provided"
+        lesion, diagnosis, age, gender, loc = "", "", "not_provided", "not_provided", "not_provided"
         if origin == "HAM1000":
             info = ham.get(s_upper) or ham.get(s) or ham.get(s.lower()) or {}
         elif origin == "ISIC2019":
@@ -696,18 +716,19 @@ def build_dataset(raw_dir: str, out_dir: str, images_only: bool=False, metadata_
             info = itobos_meta.get(s, {})
             lesion, diagnosis = "no_lesion", "NO_LESION"
             age = info.get("age", "not_provided")
-            sex = "not_provided"
+            gender = "not_provided"
             loc = info.get("localization", "not_provided")
-            return (lesion, diagnosis, age, sex, loc)
+            return (lesion, diagnosis, age, gender, loc)
         else:
             info = {}
 
         lesion = (info.get("lesion", "") or "").lower() or lesion
         diagnosis = info.get("diagnosis", "") or diagnosis
         age = info.get("age", age)
-        sex = info.get("sex", sex)
+        # prefer "gender", fall back to "sex" if any legacy dict slips through
+        gender = info.get("gender", info.get("sex", gender))
         loc = info.get("localization", loc)
-        return (lesion, diagnosis, age, sex, loc)
+        return (lesion, diagnosis, age, gender, loc)
 
     # Phase 1: copy images with dedup
     for origin in priority:
@@ -716,7 +737,7 @@ def build_dataset(raw_dir: str, out_dir: str, images_only: bool=False, metadata_
             s = os.path.splitext(fn)[0]
             s_upper = s.upper()
 
-            lesion, diagnosis, age, sex, loc = build_info(origin, p, fn, s, s_upper)
+            lesion, diagnosis, age, gender, loc = build_info(origin, p, fn, s, s_upper)
             if origin == "ITOBOS2024" and not lesion:
                 # filtered out (non-healthy)
                 continue
@@ -727,7 +748,7 @@ def build_dataset(raw_dir: str, out_dir: str, images_only: bool=False, metadata_
                 lesion = ""
             diagnosis = to_canon(diagnosis)
             age = normalize_age(age)
-            sex = normalize_sex(sex)
+            gender = normalize_gender(gender)
             loc = normalize_localization(loc)
 
             # compute hash and dedup across datasets
@@ -770,11 +791,11 @@ def build_dataset(raw_dir: str, out_dir: str, images_only: bool=False, metadata_
             hash_to_meta[h] = {
                 "image_id": desired,
                 "origin_dataset": origin_out,
-                "lesion": lesion or "unknown",
+                "lesion_type": lesion or "unknown",
                 "diagnosis": diagnosis or "UNKNOWN",
-                "localization": loc or "not_provided",
+                "body_region": loc or "not_provided",
                 "age": age or "not_provided",
-                "sex": sex or "not_provided",
+                "gender": gender or "not_provided",
             }
             copied_by_origin[origin_out] += 1
 
@@ -794,7 +815,7 @@ def build_dataset(raw_dir: str, out_dir: str, images_only: bool=False, metadata_
     rows = list(hash_to_meta.values())
     ensure_dir(out_dir)
     out_csv = os.path.join(out_dir, "metadata.csv")
-    pd.DataFrame(rows, columns=["image_id","origin_dataset","lesion","diagnosis","localization","age","sex"]).to_csv(
+    pd.DataFrame(rows, columns=["image_id","origin_dataset","lesion_type","diagnosis","body_region","age","gender"]).to_csv(
         out_csv, index=False, quoting=csv.QUOTE_MINIMAL
     )
     print("✅ Done")
@@ -844,25 +865,25 @@ def regenerate_metadata(images_out: str, out_dir: str,
         lesion = (info.get("lesion","unknown") or "unknown")
         diagnosis = (info.get("diagnosis","UNKNOWN") or "UNKNOWN")
         age = normalize_age(info.get("age",""))
-        sex = normalize_sex(info.get("sex",""))
+        gender = normalize_gender(info.get("gender", info.get("sex","")))
         loc = normalize_localization(info.get("localization",""))
 
         rows.append({
             "image_id": fn,
             "origin_dataset": origin,
-            "lesion": lesion,
+            "lesion_type": lesion,
             "diagnosis": diagnosis,
-            "localization": loc,
+            "body_region": loc,
             "age": age,
-            "sex": sex,
+            "gender": gender,
         })
 
     ensure_dir(out_dir)
     out_csv = os.path.join(out_dir, "metadata.csv")
-    pd.DataFrame(rows, columns=["image_id","origin_dataset","lesion","diagnosis","localization","age","sex"]).to_csv(
+    pd.DataFrame(rows, columns=["image_id","origin_dataset","lesion_type","diagnosis","body_region","age","gender"]).to_csv(
         out_csv, index=False, quoting=csv.QUOTE_MINIMAL
     )
-    print("✅ Metadata regeneration complete")
+    print("Metadata regeneration complete")
     print(f"- Processed {len(rows)} images")
     print(f"- Metadata written to: {out_csv}")
 
@@ -882,7 +903,7 @@ def main():
     args = ap.parse_args()
 
     if args.images_only and args.metadata_only:
-        print("❌ Error: Cannot use both --images_only and --metadata_only")
+        print("Error: Cannot use both --images_only and --metadata_only")
         return
 
     build_dataset(args.raw_dir, args.out_dir,
