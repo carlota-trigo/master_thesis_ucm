@@ -62,34 +62,46 @@ def stem(path: str) -> str:
 
 # -------------------- Normalization helpers --------------------
 
-def normalize_sex(value) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)) or str(value).strip() == "":
-        return "not_provided"
-    s = str(value).strip().lower()
-    if s in {"m", "male", "man"}:
-        return "male"
-    if s in {"f", "female", "woman"}:
-        return "female"
-    return "not_provided"
+def _is_missing(v) -> bool:
+    if v is None:
+        return True
+    try:
+        if pd.isna(v):   # catches pd.NA, np.nan, NaT
+            return True
+    except Exception:
+        pass
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"", "na", "n/a", "none", "null", "Unknown", "unknown", "<na>"}:
+            return True
+    return False
 
 def normalize_age(value) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)) or str(value).strip() == "":
+    if _is_missing(value):
         return "not_provided"
+    if isinstance(value, str):
+        m = re.search(r"\d+(\.\d+)?", value)  # e.g. "45 years"
+        if not m:
+            return "not_provided"
+        value = m.group(0)
     try:
         f = float(value)
-        if pd.isna(f):
-            return "not_provided"
-        i = int(round(f))
-        if i < 0 or i > 120:
-            return "not_provided"
-        return str(i)
     except Exception:
-        s = str(value).strip()
-        return s if s else "not_provided"
+        return "not_provided"
+    if pd.isna(f):
+        return "not_provided"
+    i = int(round(f))
+    return str(i) if 0 <= i <= 120 else "not_provided"
+
+def normalize_sex(value) -> str:
+    if _is_missing(value): return "not_provided"
+    s = str(value).strip().lower()
+    if s in {"m","male","man"}: return "male"
+    if s in {"f","female","woman"}: return "female"
+    return "not_provided"
 
 def normalize_localization(value) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)) or str(value).strip() == "":
-        return "not_provided"
+    if _is_missing(value): return "not_provided"
     return str(value).strip().lower()
 
 # -------------------- ITOBOS helpers --------------------
