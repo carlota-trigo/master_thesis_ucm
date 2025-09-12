@@ -1,0 +1,239 @@
+# Vast.ai Training Configuration for Self-Supervised Learning
+# This configuration is optimized for GPU instances on vast.ai
+
+# Vast.ai Instance Configuration
+vast_ai:
+  # Instance settings (configure these on vast.ai website)
+  template: "CUDA:Devel-Ubuntu20.04"  # Recommended template
+  storage_size: 100  # GB - adjust based on dataset size
+  max_duration: 24   # hours - set based on expected training time
+  secure_cloud: true # Enable for persistent storage
+  
+  # GPU Requirements
+  gpu_requirements:
+    min_memory: 8      # GB - minimum GPU memory
+    min_compute: 6.0   # Minimum compute capability
+    preferred_types:   # Preferred GPU types (in order)
+      - "RTX 4090"     # Best performance/cost ratio
+      - "RTX 3090"     # Good performance/cost ratio  
+      - "A100"         # High-end training
+      - "V100"         # Stable option
+      - "RTX 3080"     # Budget option
+
+# Training Configuration (optimized for vast.ai)
+training:
+  # Model settings
+  model:
+    backbone: "efficientnet"  # efficientnet, resnet, densenet
+    img_size: 224
+    temperature: 0.1
+    projection_dim: 128
+    hidden_dim: 512
+  
+  # Training hyperparameters
+  ssl:
+    epochs: 25
+    learning_rate: 0.001
+    weight_decay: 0.0001
+    batch_size: 64  # Will be auto-adjusted based on GPU memory
+  
+  finetune:
+    epochs: 25
+    learning_rate: 0.00001
+    batch_size: 64  # Will be auto-adjusted based on GPU memory
+    
+  # Performance optimizations
+  optimizations:
+    mixed_precision: true          # Use FP16 for faster training
+    gradient_checkpointing: true   # Reduce memory usage
+    data_parallel: false          # Single GPU training
+    compile_model: true           # Use tf.function compilation
+    
+  # Memory management
+  memory:
+    gpu_memory_growth: true       # Allow GPU memory to grow
+    max_gpu_memory: 0.9          # Use max 90% of GPU memory
+    prefetch_buffer: 2            # Number of batches to prefetch
+
+# Data Configuration
+data:
+  # Local paths (on your machine)
+  local_data_path: "../data"
+  local_model_output: "./outputs"
+  
+  # Remote paths (on vast.ai instance)
+  remote_data_path: "/workspace/data"
+  remote_model_output: "/workspace/outputs"
+  remote_project_path: "/workspace/project"
+  
+  # Dataset settings
+  dataset:
+    use_all_data_for_ssl: true    # Use all available data for SSL
+    validation_split: 0.15        # 15% for validation
+    test_split: 0.15             # 15% for testing
+    
+  # Data loading optimizations
+  data_loading:
+    num_parallel_calls: 4         # Parallel data loading
+    prefetch_factor: 2            # Prefetch batches
+    cache_dataset: false          # Cache dataset in memory (use carefully)
+    shuffle_buffer_size: 1000     # Buffer size for shuffling
+
+# Monitoring and Logging
+monitoring:
+  # Weights & Biases (recommended)
+  wandb:
+    enabled: true
+    project: "ssl-dermatology-vast"
+    entity: null  # Your wandb username/team
+    tags: ["vast-ai", "ssl", "simclr", "dermatology"]
+    
+  # TensorBoard
+  tensorboard:
+    enabled: true
+    log_dir: "/workspace/outputs/tensorboard_logs"
+    port: 6006
+    
+  # System monitoring
+  system_monitoring:
+    enabled: true
+    log_interval: 100  # Log system stats every N steps
+    monitor_gpu: true
+    monitor_cpu: true
+    monitor_memory: true
+    
+  # Checkpointing
+  checkpointing:
+    save_best_only: true
+    save_frequency: 1  # Save every epoch
+    max_checkpoints: 3  # Keep only 3 best checkpoints
+
+# Loss Configuration (from your existing setup)
+loss:
+  # SSL Loss (SimCLR)
+  ssl_temperature: 0.1
+  
+  # Fine-tuning losses
+  coarse_loss:
+    use_focal: true
+    focal_gamma: 2.0
+    use_class_weights: true
+    class_balanced_beta: 0.999
+    
+  fine_loss:
+    use_masked_ce_with_oe: true
+    lambda_oe: 0.1  # Outlier exposure weight
+    
+  # Sampling strategies
+  sampling:
+    use_oversampling: true
+    oversample_weights:
+      benign: 0.20
+      malignant: 0.50
+      no_lesion: 0.30
+    use_fine_oversampling: true
+    fine_minority_oversampling:
+      df: 5.0
+      vasc: 5.0
+      other: 10.0
+
+# Callbacks Configuration
+callbacks:
+  # Model checkpointing
+  model_checkpoint:
+    enabled: true
+    monitor: "val_coarse_output_loss"
+    mode: "min"
+    save_best_only: true
+    
+  # Early stopping
+  early_stopping:
+    enabled: true
+    monitor: "val_loss"
+    patience: 10
+    min_delta: 1e-4
+    restore_best_weights: true
+    
+  # Learning rate scheduling
+  lr_scheduler:
+    enabled: true
+    type: "cosine_decay"
+    initial_lr: 0.001
+    decay_steps: null  # Will be calculated automatically
+    
+  # CSV logging
+  csv_logger:
+    enabled: true
+    filename: "training_history.csv"
+
+# Environment Variables (set these on vast.ai instance)
+environment:
+  # TensorFlow optimizations
+  TF_ENABLE_ONEDNN_OPTS: "0"           # Disable oneDNN warnings
+  TF_GPU_ALLOCATOR: "cuda_malloc_async" # Better GPU memory management
+  TF_FORCE_GPU_ALLOW_GROWTH: "true"    # Allow GPU memory growth
+  
+  # CUDA optimizations
+  CUDA_VISIBLE_DEVICES: "0"            # Use first GPU only
+  CUDA_LAUNCH_BLOCKING: "0"            # Async CUDA operations
+  
+  # Python optimizations
+  PYTHONUNBUFFERED: "1"                # Unbuffered output
+  OMP_NUM_THREADS: "4"                 # Limit OpenMP threads
+  
+  # Training flags
+  USE_MIXED_PRECISION: "true"
+  USE_WANDB: "true"
+  WANDB_PROJECT: "ssl-dermatology-vast"
+
+# Estimated Costs and Resources
+cost_estimation:
+  # Based on typical vast.ai pricing (as of 2024)
+  gpu_options:
+    rtx_3080:
+      hourly_rate: 0.20  # USD/hour
+      estimated_training_time: 18  # hours
+      total_cost: 3.60   # USD
+      
+    rtx_3090:
+      hourly_rate: 0.30
+      estimated_training_time: 15
+      total_cost: 4.50
+      
+    rtx_4090:
+      hourly_rate: 0.50
+      estimated_training_time: 12
+      total_cost: 6.00
+      
+    a100:
+      hourly_rate: 1.20
+      estimated_training_time: 8
+      total_cost: 9.60
+  
+  # Resource requirements
+  storage: 100  # GB
+  bandwidth: 50 # GB (for data transfer)
+
+# Troubleshooting
+troubleshooting:
+  common_issues:
+    out_of_memory:
+      solutions:
+        - "Reduce batch_size in config"
+        - "Enable gradient_checkpointing"
+        - "Use mixed_precision"
+        - "Reduce image_size"
+        
+    slow_training:
+      solutions:
+        - "Enable mixed_precision"
+        - "Increase num_parallel_calls"
+        - "Use faster GPU instance"
+        - "Enable model compilation"
+        
+    connection_issues:
+      solutions:
+        - "Check SSH key configuration"
+        - "Verify firewall settings"
+        - "Use VPN if needed"
+        - "Try different SSH port"

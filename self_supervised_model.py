@@ -1,12 +1,13 @@
 # src/self_supervised_model.py
 # -*- coding: utf-8 -*-
-"""
-Self-Supervised Learning + Fine-tuning for Dermatology Classification
-Implements SimCLR (Simple Contrastive Learning) followed by fine-tuning
-"""
+import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN warnings
+# GPU memory optimization
+os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
+import utils
 from pathlib import Path
-import json, os, random, time
+import json, os, time
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -17,27 +18,33 @@ from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 
 # -------------------- Repro --------------------
-SEED = 999
-random.seed(SEED)
-os.environ['PYTHONHASHSEED'] = str(SEED)
-np.random.seed(SEED)
-tf.random.set_seed(SEED)
+utils.set_seed(utils.SEED)
+
+# Configure GPU memory growth for better memory management
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(f"GPU memory growth configuration failed: {e}")
 
 # -------------------- Config --------------------
-DATA_DIR = Path("../data")
-PREPARED_CSV = DATA_DIR / "training_prepared_data.csv"
-IMAGE_PATH = DATA_DIR.joinpath("images", "images")
+# Use constants from utils
+DATA_DIR = utils.DATA_DIR
+PREPARED_CSV = utils.PREPARED_CSV
+IMAGE_PATH = utils.IMAGE_PATH
+IMG_SIZE = utils.IMG_SIZE
+BATCH_SIZE = utils.BATCH_SIZE
 
 # Self-supervised learning config
 SSL_OUTDIR = Path("outputs/ssl_simclr")
 FINE_TUNE_OUTDIR = Path("outputs/ssl_finetuned")
 
-IMG_SIZE = 224
-BATCH_SIZE = 32
-SSL_EPOCHS = 50
-FINE_TUNE_EPOCHS = 30
+SSL_EPOCHS = 25
+FINE_TUNE_EPOCHS = 25  # Match base model epochs
 LR_SSL = 1e-3
-LR_FINE_TUNE = 1e-4
+LR_FINE_TUNE = 1e-5  # Match base model learning rate
 WEIGHT_DECAY = 1e-4
 PRETRAINED = True
 
@@ -46,146 +53,90 @@ TEMPERATURE = 0.1
 PROJECTION_DIM = 128
 HIDDEN_DIM = 512
 
-# Fine-tuning config (same as first_model.py)
-USE_FOCAL_COARSE = True
-FOCAL_GAMMA = 2.0
-USE_SAMPLE_WEIGHTS = True
-CLASS_BALANCED_BETA = 0.999
-USE_OVERSAMPLING = True
-OVERSAMPLE_WEIGHTS = {
-    '0': 0.20,  # benign
-    '1': 0.50,  # malignant
-    '2': 0.30,  # no_lesion
-}
-USE_FINE_OVERSAMPLING = True
-FINE_MINORITY_OVERSAMPLING = {
-    'df': 5.0,
-    'vasc': 5.0,
-    'other': 10.0,
-}
-USE_OOD_OE = True
-LAMBDA_OE = 0.1
+# Use constants from utils
+USE_FOCAL_COARSE = utils.USE_FOCAL_COARSE
+FOCAL_GAMMA = utils.FOCAL_GAMMA
+USE_SAMPLE_WEIGHTS = utils.USE_SAMPLE_WEIGHTS
+CLASS_BALANCED_BETA = utils.CLASS_BALANCED_BETA
+USE_OVERSAMPLING = utils.USE_OVERSAMPLING
+OVERSAMPLE_WEIGHTS = utils.OVERSAMPLE_WEIGHTS
+USE_FINE_OVERSAMPLING = utils.USE_FINE_OVERSAMPLING
+FINE_MINORITY_OVERSAMPLING = utils.FINE_MINORITY_OVERSAMPLING
+USE_OOD_OE = utils.USE_OOD_OE
+LAMBDA_OE = utils.LAMBDA_OE
 
 # -------------------- Labels --------------------
-DX_CLASSES = ['nv', 'mel', 'bkl', 'bcc', 'scc_akiec', 'vasc', 'df', 'other', 'no_lesion']
-LESION_TYPE_CLASSES = ["benign", "malignant", "no_lesion"]
-N_DX_CLASSES = len(DX_CLASSES)
-N_LESION_TYPE_CLASSES = len(LESION_TYPE_CLASSES)
-DX_TO_ID = {n: i for i, n in enumerate(DX_CLASSES)}
-LESION_TO_ID = {n: i for i, n in enumerate(LESION_TYPE_CLASSES)}
+DX_CLASSES = utils.DX_CLASSES
+LESION_TYPE_CLASSES = utils.LESION_TYPE_CLASSES
+N_DX_CLASSES = utils.N_DX_CLASSES
+N_LESION_TYPE_CLASSES = utils.N_LESION_TYPE_CLASSES
+DX_TO_ID = utils.DX_TO_ID
+LESION_TO_ID = utils.LESION_TO_ID
 
 # -------------------- Utils --------------------
-def set_seed(seed=42):
-    import os, random
-    import numpy as np
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    tf.random.set_seed(seed)
-
-def class_balanced_weights(counts, beta=0.999):
-    counts = np.asarray(counts, dtype=np.float64)
-    eff_num = 1.0 - np.power(beta, counts)
-    w = (1.0 - beta) / np.maximum(eff_num, 1e-8)
-    w = w / w.mean()
-    return w.astype(np.float32)
-
-def calculate_focal_alpha(class_counts):
-    """Calculate proper alpha values for focal loss based on class frequency."""
-    total = sum(class_counts)
-    alpha = [total / (len(class_counts) * count) for count in class_counts]
-    return np.array(alpha, dtype=np.float32)
+# All utility functions are now imported from utils module
 
 # -------------------- SimCLR Data Augmentation --------------------
 def simclr_augment(image, img_size=IMG_SIZE):
-    """
-    SimCLR-style data augmentation for contrastive learning.
-    Applies two different augmentations to the same image.
-    """
-    # Convert to float32
-    image = tf.cast(image, tf.float32)
-    
-    # Random brightness adjustment
-    def random_brightness(x):
-        r = tf.random.uniform([])
-        factor = tf.where(r < 0.7,  # 70% darken
-                          tf.random.uniform([], 0.6, 1.0),
-                          tf.random.uniform([], 1.0, 1.15))  # 30% brighten
-        x = x * factor
-        return tf.clip_by_value(x, 0.0, 255.0)
-    
-    # Random color jitter
-    def color_jitter(x):
-        x = tf.image.random_contrast(x, 0.8, 1.2)
-        x = tf.image.random_saturation(x, 0.8, 1.2)
-        x = tf.image.random_hue(x, 0.1)
-        return tf.clip_by_value(x, 0.0, 255.0)
-    
-    # Random Gaussian blur
-    def gaussian_blur(x):
-        sigma = tf.random.uniform([], 0.1, 2.0)
-        return tf.image.gaussian_filter2d(x, filter_shape=[5, 5], sigma=sigma)
-    
-    # Apply augmentations
+    # to float32 in [0,1]
+    image = tf.image.convert_image_dtype(image, tf.float32)
+
+    # flips + 0/90/180/270 rotation
     image = tf.image.random_flip_left_right(image)
     image = tf.image.random_flip_up_down(image)
-    image = tf.image.random_rotation(image, 0.2)
-    image = random_brightness(image)
-    image = color_jitter(image)
-    
-    # Randomly apply blur
+    k = tf.random.uniform([], 0, 4, dtype=tf.int32)
+    image = tf.image.rot90(image, k=k)
+
+    # color jitter on [0,1]
+    image = tf.image.random_brightness(image, max_delta=0.15)
+    image = tf.image.random_contrast(image, 0.8, 1.2)
+    image = tf.image.random_saturation(image, 0.8, 1.2)
+    image = tf.image.random_hue(image, 0.08)
+
+    # optional Gaussian blur
     if tf.random.uniform([]) < 0.5:
-        image = gaussian_blur(image)
-    
-    # Resize and crop
+        kernel = tf.constant([[1,2,1],[2,4,2],[1,2,1]], tf.float32) / 16.0
+        kernel = tf.tile(kernel[:, :, None, None], [1, 1, 3, 1])  # [3,3,3,1]
+        image = tf.nn.depthwise_conv2d(image[None, ...], kernel, [1,1,1,1], "SAME")[0]
+
+    # resize+random crop
     image = tf.image.resize(image, [256, 256])
     image = tf.image.random_crop(image, [img_size, img_size, 3])
-    
+
     return image
 
 def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
-    """
-    Create dataset for SimCLR training with paired augmentations.
-    """
     df = df.copy()
-    
-    # Resolve image paths
     def resolve_path(p):
         p = str(p)
         return p if os.path.isabs(p) else str(IMAGE_PATH / p)
     df["image_path"] = df["image_path"].astype(str).apply(resolve_path)
-    
-    img_paths = df["image_path"].tolist()
-    
-    ds = tf.data.Dataset.from_tensor_slices(img_paths)
-    ds = ds.shuffle(len(df), reshuffle_each_iteration=True)
-    
-    rescale = layers.Rescaling(1. / 255.0)
-    normalization_layer = layers.Normalization(
-        mean=[0.485, 0.456, 0.406],
-        variance=[0.229 ** 2, 0.224 ** 2, 0.225 ** 2]
-    )
-    
+
+    paths = df["image_path"].tolist()
+    ds = tf.data.Dataset.from_tensor_slices(paths).shuffle(len(df), reshuffle_each_iteration=True)
+
+    norm = layers.Normalization(mean=[0.485,0.456,0.406], variance=[0.229**2,0.224**2,0.225**2])
+
     @tf.function
     def load_and_augment(path):
         img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-        
-        # Create two different augmentations of the same image
-        aug1 = simclr_augment(img, img_size)
-        aug2 = simclr_augment(img, img_size)
-        
-        # Normalize both
-        aug1 = rescale(aug1)
-        aug1 = normalization_layer(aug1)
-        aug2 = rescale(aug2)
-        aug2 = normalization_layer(aug2)
-        
-        return aug1, aug2
-    
+        # robust to JPG/PNG
+        img = tf.io.decode_image(img, channels=3, expand_animations=False)
+        a1 = simclr_augment(img, img_size)
+        a2 = simclr_augment(img, img_size)
+        # if you keep rescale, apply before norm; otherwise delete the line below
+        # a1, a2 = rescale(a1), rescale(a2)
+        a1, a2 = norm(a1), norm(a2)
+        return tf.stack([a1, a2], axis=0)  # (2,H,W,3)
+
     ds = ds.map(load_and_augment, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-    return ds
+    ds = ds.batch(batch_size)
+
+    def pack_views(pairs):
+        v1, v2 = pairs[:,0,...], pairs[:,1,...]
+        return tf.concat([v1, v2], axis=0)  # (2B,H,W,3)
+
+    return ds.map(pack_views, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
 
 # -------------------- SimCLR Model --------------------
 def create_simclr_model(img_size=IMG_SIZE, projection_dim=PROJECTION_DIM, hidden_dim=HIDDEN_DIM):
@@ -212,214 +163,71 @@ def create_simclr_model(img_size=IMG_SIZE, projection_dim=PROJECTION_DIM, hidden
     return model
 
 def simclr_loss(temperature=TEMPERATURE):
-    """
-    SimCLR contrastive loss function.
-    """
-    def loss_fn(projections):
-        # Normalize projections
-        projections = tf.nn.l2_normalize(projections, axis=1)
-        
-        # Split into two views
-        batch_size = tf.shape(projections)[0] // 2
-        proj1 = projections[:batch_size]
-        proj2 = projections[batch_size:]
-        
-        # Compute similarity matrix
-        similarity_matrix = tf.matmul(proj1, proj2, transpose_b=True) / temperature
-        
-        # Create labels (diagonal elements are positive pairs)
-        labels = tf.eye(batch_size)
-        
-        # Compute loss
-        loss = tf.keras.losses.categorical_crossentropy(
-            labels, similarity_matrix, from_logits=True
-        )
-        
+    def loss_fn(_, z):
+        z = tf.nn.l2_normalize(z, axis=1)
+        n = tf.shape(z)[0] // 2
+        z1, z2 = z[:n], z[n:]
+        z = tf.concat([z1, z2], axis=0)                  # (2n,d)
+        sim = tf.matmul(z, z, transpose_b=True) / temperature  # (2n,2n)
+
+        # mask self-similarity
+        mask = tf.eye(2*n, dtype=tf.bool)
+        sim = tf.where(mask, tf.fill(tf.shape(sim), -1e9), sim)
+
+        # positives: i <-> i+n
+        pos = tf.concat([tf.range(n, 2*n), tf.range(0, n)], axis=0)  # (2n,)
+        loss = tf.keras.losses.sparse_categorical_crossentropy(pos, sim, from_logits=True)
         return tf.reduce_mean(loss)
-    
     return loss_fn
-
-# -------------------- Fine-tuning Dataset (reuse from first_model.py) --------------------
-def build_augmenter(is_training):
-    if is_training:
-        def random_brightness_mul(x):
-            x = tf.cast(x, tf.float32)
-            r = tf.random.uniform([])
-            factor = tf.where(r < 0.7,  # 70% darken
-                              tf.random.uniform([], 0.6, 1.0),
-                              tf.random.uniform([], 1.0, 1.15))  # 30% brighten
-            x = x * factor
-            return tf.clip_by_value(x, 0.0, 255.0)
-
-        return keras.Sequential([
-            layers.Resizing(256, 256),
-            layers.RandomCrop(IMG_SIZE, IMG_SIZE),
-            layers.RandomFlip("horizontal_and_vertical"),
-            layers.RandomRotation(factor=0.1),
-            layers.Lambda(random_brightness_mul, name="random_brightness_bias_dark"),
-        ], name="augmenter")
-    else:
-        return keras.Sequential([
-            layers.Resizing(256, 256),
-            layers.CenterCrop(IMG_SIZE, IMG_SIZE),
-        ], name="preprocessor")
-
-def augment_minority(img):
-    img = tf.image.random_contrast(img, 0.85, 1.15)
-    img = tf.image.random_saturation(img, 0.9, 1.1)
-    noise = tf.random.normal(tf.shape(img), mean=0.0, stddev=3.0)
-    img = tf.clip_by_value(img + noise, 0.0, 255.0)
-    return img
-
-def build_dataset(df, is_training, minority_fine_ids=None, fine_oversampling=None):
-    """
-    Build dataset for fine-tuning (same as first_model.py).
-    """
-    df = df.copy()
-    
-    def resolve_path(p):
-        p = str(p)
-        return p if os.path.isabs(p) else str(IMAGE_PATH / p)
-    df["image_path"] = df["image_path"].astype(str).apply(resolve_path)
-
-    df_fine = df["head1_idx"].astype("int32").values
-    df_coarse = df["head2_idx"].fillna(0).astype("int32").values
-
-    if minority_fine_ids is None:
-        minority_fine_ids = set()
-    
-    if fine_oversampling is not None and is_training:
-        df = apply_fine_oversampling(df, fine_oversampling)
-        df_fine = df["head1_idx"].astype("int32").values
-        df_coarse = df["head2_idx"].fillna(0).astype("int32").values
-
-    img_paths = df["image_path"].tolist()
-
-    ds = tf.data.Dataset.from_tensor_slices((img_paths, df_fine, df_coarse))
-    if is_training:
-        ds = ds.shuffle(len(df), reshuffle_each_iteration=True)
-
-    augmenter = build_augmenter(is_training)
-    rescale = layers.Rescaling(1. / 255.0)
-    normalization_layer = layers.Normalization(
-        mean=[0.485, 0.456, 0.406],
-        variance=[0.229 ** 2, 0.224 ** 2, 0.225 ** 2]
-    )
-
-    @tf.function
-    def load_and_preprocess(path, label_fine, label_coarse):
-        img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-
-        img = augmenter(img)
-
-        if is_training:
-            minority = tf.logical_or(
-                tf.equal(label_coarse, 1),  # malignant
-                tf.reduce_any(tf.equal(label_fine, tf.constant(list(minority_fine_ids), dtype=tf.int32)))
-                if len(minority_fine_ids) > 0 else tf.constant(False)
-            )
-            img = tf.cond(minority, lambda: augment_minority(img), lambda: img)
-
-        img = tf.ensure_shape(img, [IMG_SIZE, IMG_SIZE, 3])
-        img = rescale(img)
-        img = normalization_layer(img)
-
-        labels = {"fine_output": label_fine, "coarse_output": label_coarse}
-        return {"input_rgb": img}, labels
-
-    ds = ds.map(load_and_preprocess, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
-    return ds
-
-def apply_fine_oversampling(df, fine_oversampling):
-    """Apply oversampling to fine-grained minority classes."""
-    df_list = [df]
-    
-    for class_name, multiplier in fine_oversampling.items():
-        if class_name in DX_TO_ID:
-            class_id = DX_TO_ID[class_name]
-            minority_samples = df[df["head1_idx"] == class_id]
-            if len(minority_samples) > 0:
-                n_repeats = int(multiplier) - 1
-                if n_repeats > 0:
-                    repeated_samples = pd.concat([minority_samples] * n_repeats, ignore_index=True)
-                    df_list.append(repeated_samples)
-    
-    return pd.concat(df_list, ignore_index=True)
 
 # -------------------- Fine-tuning Model --------------------
 def create_finetuned_model(ssl_encoder, n_fine, n_coarse, img_size=IMG_SIZE, dropout=0.2):
-    """
-    Create fine-tuned model using pre-trained SSL encoder.
-    """
-    inputs = keras.Input(shape=(img_size, img_size, 3), name="input_rgb")
-    
-    # Use the pre-trained encoder (without projection head)
-    backbone = ssl_encoder.layers[1]  # EfficientNetB1 layer
+    inputs = keras.Input(shape=(img_size, img_size, 3), name="input")
+    # get the nested EfficientNet by name
+    backbone = ssl_encoder.get_layer("efficientnetb1")
     x = backbone(inputs)
     x = layers.GlobalAveragePooling2D(name="avg_pool")(x)
     x = layers.Dropout(dropout, name="top_dropout")(x)
-    
-    out_fine = layers.Dense(n_fine, name="fine_output")(x)
     out_coarse = layers.Dense(n_coarse, name="coarse_output")(x)
+    out_fine   = layers.Dense(n_fine,   name="fine_output")(x)
+    return keras.Model(inputs=inputs, outputs=[out_coarse, out_fine], name="SSL_FineTuned")
+
+# -------------------- Main Function --------------------
+def main():
+    """
+    Main function to run SSL + Fine-tuning pipeline.
+    """
+    print("Starting Self-Supervised Learning + Fine-tuning pipeline...")
     
-    return keras.Model(inputs={'input_rgb': inputs}, outputs=[out_fine, out_coarse], name="SSL_FineTuned")
-
-# -------------------- Losses (same as first_model.py) --------------------
-def masked_sparse_ce_with_oe(y_true, y_pred):
-    y_true = tf.cast(y_true, tf.int32)
-    num_classes = tf.shape(y_pred)[-1]
-
-    mask_valid = tf.logical_and(y_true >= 0, y_true < num_classes)
-    mask_ignore = tf.equal(y_true, -1)
-    mask_ood = tf.equal(y_true, -2)
-
-    y_true_safe = tf.where(mask_valid, y_true, tf.zeros_like(y_true))
-    ce = tf.keras.losses.sparse_categorical_crossentropy(y_true_safe, y_pred, from_logits=True)
-
-    log_p = tf.nn.log_softmax(y_pred, axis=-1)
-    k = tf.cast(num_classes, log_p.dtype)
-    oe = -tf.reduce_mean(log_p, axis=-1)
-    oe = LAMBDA_OE * oe
-
-    per_example = tf.where(mask_valid, ce, tf.zeros_like(ce))
-    per_example = tf.where(mask_ood, oe, per_example)
-
-    denom = tf.reduce_sum(tf.cast(tf.logical_or(mask_valid, mask_ood), per_example.dtype))
-    return tf.math.divide_no_nan(tf.reduce_sum(per_example), denom)
-
-def sparse_categorical_focal_loss(gamma=2.0, alpha=None):
-    def loss(y_true, y_pred):
-        y_true = tf.cast(y_true, tf.int32)
-        num_classes = tf.shape(y_pred)[-1]
-        y_true_oh = tf.one_hot(y_true, depth=num_classes)
-        p = tf.nn.softmax(y_pred, axis=-1)
-        p_t = tf.reduce_sum(y_true_oh * p, axis=-1)
-        ce = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred, from_logits=True)
-        mod = tf.pow(1.0 - p_t, gamma)
-        fl = mod * ce
-        if alpha is not None:
-            alpha_vec = tf.convert_to_tensor(alpha, dtype=fl.dtype)
-            alpha_t = tf.reduce_sum(y_true_oh * alpha_vec, axis=-1)
-            fl = alpha_t * fl
-        return tf.reduce_mean(fl)
-    return loss
-
-# -------------------- Main Functions --------------------
-def train_ssl_model():
-    """
-    Train SimCLR model using self-supervised learning.
-    """
-    print("Starting SimCLR self-supervised training...")
+    # ==================== STEP 1: SSL PRE-TRAINING ====================
+    print("\n" + "="*60)
+    print("STEP 1: SIMCLR SELF-SUPERVISED PRE-TRAINING")
+    print("="*60)
+    
     SSL_OUTDIR.mkdir(exist_ok=True, parents=True)
     
     # Load data
-    df = pd.read_csv(PREPARED_CSV)
+    try:
+        df = pd.read_csv(PREPARED_CSV)
+        print(f"Loaded dataset with {len(df)} samples")
+    except FileNotFoundError:
+        print(f"Error: Could not find {PREPARED_CSV}")
+        print("Please ensure the data file exists and path is correct.")
+        return
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return
     
     # Use all available data for SSL (including unlabeled)
     ssl_df = df.copy()
     print(f"Using {len(ssl_df)} samples for SSL training")
+    
+    # Validate dataset size
+    if len(ssl_df) < BATCH_SIZE:
+        print(f"Error: Dataset too small ({len(ssl_df)} samples). Need at least {BATCH_SIZE} samples.")
+        return
+    if len(ssl_df) < 100:
+        print(f"⚠️  Warning: Very small dataset ({len(ssl_df)} samples). Training may be unstable.")
     
     # Create SSL dataset
     ssl_ds = create_simclr_dataset(ssl_df)
@@ -433,7 +241,8 @@ def train_ssl_model():
         optimizer=optimizer,
         loss=simclr_loss(),
     )
-    
+    print(ssl_model.summary())
+
     # Callbacks
     callbacks = [
         keras.callbacks.ModelCheckpoint(
@@ -461,94 +270,63 @@ def train_ssl_model():
         ),
     ]
     
-    # Train
+    # Calculate steps per epoch for SSL
+    ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE
+    if ssl_steps_per_epoch == 0:
+        ssl_steps_per_epoch = 1  # Minimum 1 step per epoch
+    print(f"SSL steps per epoch: {ssl_steps_per_epoch}")
+    
+    # Train SSL model
     print("Training SimCLR model...")
-    history = ssl_model.fit(
+    ssl_history = ssl_model.fit(
         ssl_ds,
         epochs=SSL_EPOCHS,
+        steps_per_epoch=ssl_steps_per_epoch,
         callbacks=callbacks,
         verbose=1,
     )
     
-    # Save history
-    with open(SSL_OUTDIR / "ssl_stats.json", "w") as f:
-        json.dump(history.history, f)
+    # Save SSL history
+    with open(SSL_OUTDIR / "stats.json", "w") as f:
+        json.dump(ssl_history.history, f)
     
     print(f"SSL training complete. Model saved to '{SSL_OUTDIR}'.")
-    return ssl_model
-
-def fine_tune_model(ssl_model):
-    """
-    Fine-tune the SSL model on labeled data.
-    """
-    print("Starting fine-tuning...")
+    
+    # ==================== STEP 2: SUPERVISED FINE-TUNING ====================
+    print("\n" + "="*60)
+    print("STEP 2: SUPERVISED FINE-TUNING")
+    print("="*60)
+    
     FINE_TUNE_OUTDIR.mkdir(exist_ok=True, parents=True)
     
-    # Load data
-    df = pd.read_csv(PREPARED_CSV)
-    
-    # Process labels (same as first_model.py)
-    if "lesion_type" in df.columns:
-        lt = df["lesion_type"].astype(str).str.strip().str.lower()
-        map_coarse = {"benign": 0, "malignant": 1, "no_lesion": 2}
-        df["head2_idx"] = pd.to_numeric(df.get("head2_idx"), errors="coerce")
-        to_fill = df["head2_idx"].isna() & lt.isin(map_coarse.keys())
-        df.loc[to_fill, "head2_idx"] = lt[to_fill].map(map_coarse)
-    
-    df["head2_idx"] = pd.to_numeric(df.get("head2_idx"), errors="coerce")
-    bad_coarse = df["head2_idx"].isna() | (df["head2_idx"] < 0) | (df["head2_idx"] >= N_LESION_TYPE_CLASSES)
-    if bad_coarse.any():
-        print(f"[coarse] dropping {int(bad_coarse.sum())} rows with invalid coarse labels")
-        df = df[~bad_coarse].copy()
+    # Load and process data using utils
+    processed_df = utils.process_labels(df)
 
-    # Handle fine labels
-    is_ood = np.zeros(len(df), dtype=bool)
-    text_dx_col = None
-    for c in ["dx_merged", "dx", "diagnosis", "fine_label"]:
-        if c in df.columns:
-            text_dx_col = c
-            break
-    if text_dx_col is not None:
-        dx_txt = df[text_dx_col].astype(str).str.strip().str.lower()
-        is_ood = dx_txt.eq("unknown").values
-    
-    df["head1_idx"] = pd.to_numeric(df.get("head1_idx"), errors="coerce")
-    mask_bad_fine = df["head1_idx"].isna() | (df["head1_idx"] < 0) | (df["head1_idx"] >= N_DX_CLASSES)
-    df.loc[mask_bad_fine, "head1_idx"] = -1  # ignore
-    
-    if USE_OOD_OE and is_ood.any():
-        df.loc[is_ood, "head1_idx"] = -2
-    
-    df["head1_idx"] = df["head1_idx"].astype("int32")
-
-    # Split data
-    if "split" in df.columns:
-        train_df = df[df.split == "train"].copy()
-        val_df = df[df.split == "val"].copy()
-        print("Using existing train/val split")
+    # Split data - Use proper 3-way split (test set will be used later for evaluation)
+    if "split" in processed_df.columns:
+        train_df = processed_df[processed_df.split == "train"].copy()
+        val_df = processed_df[processed_df.split == "val"].copy()
+        # test_df will be used later in evaluation script
+        print("Using existing train/val/test split")
+        print(f"Train: {len(train_df)}, Val: {len(val_df)}")
+        print("Note: Test set will be used later for unbiased evaluation")
     else:
-        train_df, val_df = train_test_split(
-            df, test_size=0.2, stratify=df['head2_idx'], random_state=SEED
+        # Fallback: Create 3-way split if no split column exists
+        train_val_df, test_df = train_test_split(
+            processed_df, test_size=0.15, stratify=processed_df['head1_idx'], random_state=utils.SEED
         )
-        print("Created stratified train/val split")
+        train_df, val_df = train_test_split(
+            train_val_df, test_size=0.2, stratify=train_val_df['head1_idx'], random_state=utils.SEED
+        )
+        print("Created stratified train/val/test split")
+        print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+        print("Note: Test set will be used later for unbiased evaluation")
 
-    # Calculate class weights
-    def counts_from_labels(series, n_classes, valid_range=(0, None)):
-        y = pd.to_numeric(series, errors="coerce").astype("float")
-        lo = valid_range[0]; hi = valid_range[1] if valid_range[1] is not None else np.inf
-        y = y[(y >= lo) & (y < (hi if hi != np.inf else np.inf))]
-        y = y.dropna().astype(int).values
-        counts = np.bincount(y, minlength=n_classes)
-        return counts
+    # Calculate class weights using utils
+    coarse_counts = utils.counts_from_labels(train_df["head1_idx"], N_LESION_TYPE_CLASSES, (0, N_LESION_TYPE_CLASSES))    
+    coarse_alpha = utils.calculate_focal_alpha(coarse_counts)
 
-    coarse_counts = counts_from_labels(train_df["head2_idx"], N_LESION_TYPE_CLASSES, (0, N_LESION_TYPE_CLASSES))
-    fine_counts = counts_from_labels(train_df["head1_idx"], N_DX_CLASSES, (0, N_DX_CLASSES))
-    
-    coarse_w = class_balanced_weights(coarse_counts, beta=CLASS_BALANCED_BETA)
-    fine_w = class_balanced_weights(fine_counts, beta=CLASS_BALANCED_BETA)
-    coarse_alpha = calculate_focal_alpha(coarse_counts)
-
-    # Build datasets
+    # Build datasets using utils
     minority_fine_names = ["df", "vasc", "other", "no_lesion"]
     minority_fine_ids = {DX_TO_ID[n] for n in minority_fine_names if n in DX_TO_ID}
 
@@ -556,10 +334,10 @@ def fine_tune_model(ssl_model):
         ds_parts = []
         weights = []
         for c in [0, 1, 2]:
-            sub = train_df[train_df["head2_idx"] == c]
+            sub = train_df[train_df["head1_idx"] == c]
             if len(sub) == 0:
                 continue
-            ds_c = build_dataset(sub, is_training=True, minority_fine_ids=minority_fine_ids, 
+            ds_c = utils.build_dataset(sub, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids, 
                                fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
             ds_parts.append(ds_c)
             weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
@@ -569,10 +347,10 @@ def fine_tune_model(ssl_model):
             ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
         )
     else:
-        train_ds = build_dataset(train_df, is_training=True, minority_fine_ids=minority_fine_ids,
+        train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
                                  fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
 
-    val_ds = build_dataset(val_df, is_training=False, minority_fine_ids=minority_fine_ids)
+    val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
 
     print(f"Train samples: {len(train_df)}, Val samples: {len(val_df)}")
 
@@ -585,11 +363,13 @@ def fine_tune_model(ssl_model):
     
     # Compile with frozen backbone
     if USE_FOCAL_COARSE:
-        coarse_loss = sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
+        coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
     else:
         coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
     steps_per_epoch = len(train_df) // BATCH_SIZE
+    if steps_per_epoch == 0:
+        steps_per_epoch = 1  # Minimum 1 step per epoch
     total_steps = FINE_TUNE_EPOCHS * steps_per_epoch
     
     lr_schedule = keras.optimizers.schedules.CosineDecay(
@@ -603,45 +383,56 @@ def fine_tune_model(ssl_model):
     model.compile(
         optimizer=optimizer,
         loss={
-            "fine_output": masked_sparse_ce_with_oe,
             "coarse_output": coarse_loss,
+            "fine_output": utils.masked_sparse_ce_with_oe,
         },
         metrics={
-            "fine_output": ["sparse_categorical_accuracy"],
             "coarse_output": ["sparse_categorical_accuracy"],
+            "fine_output": ["sparse_categorical_accuracy"],
         },
     )
+    print(model.summary())
+    # Callbacks using utils
+    callbacks = utils.create_callbacks(FINE_TUNE_OUTDIR, 'ssl_finetuned')
+    
+    # Add custom progress callback for detailed tracking
+    class ProgressCallback(keras.callbacks.Callback):
+        def on_epoch_begin(self, epoch, logs=None):
+            print(f"\n{'='*60}")
+            print(f"EPOCH {epoch + 1}/{FINE_TUNE_EPOCHS}")
+            print(f"{'='*60}")
+            
+        def on_epoch_end(self, epoch, logs=None):
+            print(f"\nEpoch {epoch + 1} Summary:")
+            print(f"- Coarse Loss: {logs.get('coarse_output_loss', 0):.4f}")
+            print(f"- Coarse Accuracy: {logs.get('coarse_output_sparse_categorical_accuracy', 0):.4f}")
+            print(f"- Fine Loss: {logs.get('fine_output_loss', 0):.4f}")
+            print(f"- Fine Accuracy: {logs.get('fine_output_sparse_categorical_accuracy', 0):.4f}")
+            print(f"- Total Loss: {logs.get('loss', 0):.4f}")
+            if 'val_loss' in logs:
+                print(f"- Val Loss: {logs.get('val_loss', 0):.4f}")
+                print(f"- Val Coarse Acc: {logs.get('val_coarse_output_sparse_categorical_accuracy', 0):.4f}")
+                print(f"- Val Fine Acc: {logs.get('val_fine_output_sparse_categorical_accuracy', 0):.4f}")
+    
+    callbacks.append(ProgressCallback())
 
-    # Callbacks
-    callbacks = [
-        keras.callbacks.ModelCheckpoint(
-            filepath=str(FINE_TUNE_OUTDIR / "finetuned_best_model.keras"),
-            save_best_only=True,
-            monitor="val_coarse_output_loss",
-            mode="min",
-            verbose=1,
-        ),
-        keras.callbacks.CSVLogger(str(FINE_TUNE_OUTDIR / "finetuned_history.csv")),
-        keras.callbacks.TensorBoard(
-            log_dir=str(FINE_TUNE_OUTDIR / "finetuned_tensorboard_logs"),
-            histogram_freq=1,
-            write_graph=True,
-            write_images=True,
-            update_freq='epoch',
-        ),
-        keras.callbacks.EarlyStopping(
-            monitor="val_loss",
-            mode="min",
-            patience=10,
-            min_delta=1e-4,
-            restore_best_weights=True,
-            verbose=1,
-        ),
-        # Unfreeze backbone after some epochs
-        keras.callbacks.LambdaCallback(
-            on_epoch_begin=lambda epoch, logs: unfreeze_backbone(model, epoch) if epoch == 10 else None
-        ),
-    ]
+    # Calculate steps for better progress tracking
+    steps_per_epoch = len(train_df) // BATCH_SIZE
+    if steps_per_epoch == 0:
+        steps_per_epoch = 1  # Minimum 1 step per epoch
+    validation_steps = len(val_df) // BATCH_SIZE
+    if validation_steps == 0:
+        validation_steps = 1  # Minimum 1 validation step
+    
+    print(f"\nTraining Configuration:")
+    print(f"- Steps per epoch: {steps_per_epoch}")
+    print(f"- Validation steps: {validation_steps}")
+    print(f"- Total training steps: {steps_per_epoch * FINE_TUNE_EPOCHS}")
+    print(f"- Batch size: {BATCH_SIZE}")
+    print(f"- Learning rate: {LR_FINE_TUNE}")
+    print(f"- Mixed precision: Disabled (for consistency with base model)")
+    print(f"- Early stopping: Enabled (patience=10)")
+    print(f"\nStarting training...\n")
 
     # Train with frozen backbone first
     print("Training with frozen backbone...")
@@ -651,6 +442,8 @@ def fine_tune_model(ssl_model):
         epochs=10,
         callbacks=callbacks,
         verbose=1,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps,
     )
 
     # Unfreeze backbone and continue training
@@ -658,12 +451,12 @@ def fine_tune_model(ssl_model):
     model.compile(
         optimizer=keras.optimizers.AdamW(learning_rate=LR_FINE_TUNE/10, weight_decay=WEIGHT_DECAY),
         loss={
-            "fine_output": masked_sparse_ce_with_oe,
             "coarse_output": coarse_loss,
+            "fine_output": utils.masked_sparse_ce_with_oe,
         },
         metrics={
-            "fine_output": ["sparse_categorical_accuracy"],
             "coarse_output": ["sparse_categorical_accuracy"],
+            "fine_output": ["sparse_categorical_accuracy"],
         },
     )
 
@@ -675,6 +468,8 @@ def fine_tune_model(ssl_model):
         initial_epoch=10,
         callbacks=callbacks,
         verbose=1,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps,
     )
 
     # Combine histories
@@ -683,83 +478,21 @@ def fine_tune_model(ssl_model):
         combined_history[key] = history1.history[key] + history2.history[key]
 
     # Save results
-    with open(FINE_TUNE_OUTDIR / "finetuned_stats.json", "w") as f:
+    with open(FINE_TUNE_OUTDIR / "stats.json", "w") as f:
         json.dump(combined_history, f)
     
-    # Evaluate model
-    evaluate_model(model, val_ds, val_df, FINE_TUNE_OUTDIR)
+    print(f"\nFine-tuning complete! Model saved to '{FINE_TUNE_OUTDIR}'")
+    print("Note: Use a separate evaluation script with the test set for unbiased evaluation")
     
-    print(f"Fine-tuning complete. Model saved to '{FINE_TUNE_OUTDIR}'.")
-    return model
-
-def unfreeze_backbone(model, epoch):
-    """Unfreeze backbone after certain epoch."""
-    if epoch == 10:
-        backbone = model.layers[1]
-        backbone.trainable = True
-        print(f"Epoch {epoch}: Unfreezing backbone for fine-tuning")
-
-def evaluate_model(model, val_ds, val_df, outdir):
-    """Comprehensive model evaluation."""
-    print("\nEvaluating SSL fine-tuned model...")
-    
-    predictions = model.predict(val_ds, verbose=1)
-    fine_preds = predictions[0]
-    coarse_preds = predictions[1]
-    
-    fine_pred_classes = np.argmax(fine_preds, axis=1)
-    coarse_pred_classes = np.argmax(coarse_preds, axis=1)
-    
-    fine_true = val_df['head1_idx'].values
-    coarse_true = val_df['head2_idx'].values
-    
-    valid_fine_mask = fine_true >= 0
-    fine_true_valid = fine_true[valid_fine_mask]
-    fine_pred_valid = fine_pred_classes[valid_fine_mask]
-    
-    print("\nFine-grained Classification Report:")
-    fine_report = classification_report(fine_true_valid, fine_pred_valid, 
-                                       target_names=DX_CLASSES, digits=4)
-    print(fine_report)
-    
-    print("\nCoarse Classification Report:")
-    coarse_report = classification_report(coarse_true, coarse_pred_classes,
-                                       target_names=LESION_TYPE_CLASSES, digits=4)
-    print(coarse_report)
-    
-    with open(outdir / "ssl_fine_classification_report.txt", "w") as f:
-        f.write(str(fine_report))
-    with open(outdir / "ssl_coarse_classification_report.txt", "w") as f:
-        f.write(str(coarse_report))
-    
-    print("\nFine-grained Confusion Matrix:")
-    cm_fine = confusion_matrix(fine_true_valid, fine_pred_valid)
-    print(cm_fine)
-    
-    print("\nCoarse Confusion Matrix:")
-    cm_coarse = confusion_matrix(coarse_true, coarse_pred_classes)
-    print(cm_coarse)
-    
-    print(f"\nSSL evaluation complete. Reports saved to {outdir}")
-
-def main():
-    """
-    Main function to run SSL + Fine-tuning pipeline.
-    """
-    print("Starting Self-Supervised Learning + Fine-tuning pipeline...")
-    
-    # Step 1: Train SSL model
-    ssl_model = train_ssl_model()
-    
-    # Step 2: Fine-tune on labeled data
-    finetuned_model = fine_tune_model(ssl_model)
-    
-    print("\n" + "="*50)
-    print("SSL + Fine-tuning pipeline completed successfully!")
-    print("="*50)
-    print(f"SSL model saved to: {SSL_OUTDIR}")
-    print(f"Fine-tuned model saved to: {FINE_TUNE_OUTDIR}")
-    print("\nTo compare with baseline model, run evaluation scripts.")
+    # ==================== COMPLETION ====================
+    print("\n" + "="*60)
+    print("SSL + FINE-TUNING PIPELINE COMPLETE")
+    print("="*60)
+    print("✅ SSL pre-training completed")
+    print("✅ Fine-tuning completed")
+    print("✅ Model saved and ready for evaluation")
+    print("📝 Next step: Run evaluation script on test set")
+    print("="*60)
 
 if __name__ == "__main__":
     main()

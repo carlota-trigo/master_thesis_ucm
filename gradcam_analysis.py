@@ -72,8 +72,9 @@ class GradCAM:
             conv_outputs, predictions = self.grad_model(image)
             
             # Use predicted class if class_idx not specified
+            # Using coarse head (predictions[0]) for benign/malignant classification
             if class_idx is None:
-                class_idx = tf.argmax(predictions[0])
+                class_idx = tf.argmax(predictions[0])  # Coarse head: benign/malignant/no_lesion
             
             # Get the score for the target class
             class_output = predictions[0, class_idx]
@@ -92,6 +93,7 @@ class GradCAM:
         # Normalize heatmap
         heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
         
+        # Return coarse head predictions (benign/malignant/no_lesion)
         return heatmap.numpy(), predictions[0].numpy()
     
     def overlay_heatmap(self, heatmap, image, alpha=0.4):
