@@ -9,6 +9,17 @@ os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
 
+# Check if we should force CPU mode (from environment or restart)
+FORCE_CPU_MODE = os.environ.get('CUDA_VISIBLE_DEVICES', '') == '-1'
+
+if FORCE_CPU_MODE:
+    print("\n" + "="*60)
+    print("CPU-ONLY MODE ENABLED")
+    print("="*60)
+    print("Running in CPU-only mode to avoid CuDNN issues")
+    print("Training will be slower but more stable")
+    print("="*60)
+
 # Fallback options for CuDNN issues
 try:
     import tensorflow as tf
@@ -47,8 +58,14 @@ for device in tf.config.list_physical_devices():
 gpus = None
 use_gpu = False
 
-try:
-    gpus = tf.config.experimental.list_physical_devices('GPU')
+# Skip GPU configuration if CPU-only mode is forced
+if FORCE_CPU_MODE:
+    print("\nCPU-only mode: Skipping GPU configuration")
+    gpus = None
+    use_gpu = False
+else:
+    try:
+        gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
         print(f"\nFound {len(gpus)} GPU(s):")
         try:
@@ -99,10 +116,10 @@ try:
         print("\nNo GPU found. Training will use CPU.")
         print("Note: CPU training will be significantly slower.")
         use_gpu = False
-except Exception as e:
-    print(f"GPU detection failed: {e}")
-    print("Falling back to CPU training")
-    use_gpu = False
+    except Exception as e:
+        print(f"GPU detection failed: {e}")
+        print("Falling back to CPU training")
+        use_gpu = False
 
 # -------------------- Config --------------------
 # Use constants from utils
@@ -125,12 +142,13 @@ PRETRAINED = True
 
 # Optimize batch size based on available hardware
 BATCH_SIZE_GPU = BATCH_SIZE  # Default value
-if use_gpu:
+if use_gpu and not FORCE_CPU_MODE:
     # Use conservative batch size to avoid OOM errors
     BATCH_SIZE_GPU = 64  # Reduced from 256 to prevent memory issues
     print(f"GPU detected: Using conservative batch size {BATCH_SIZE_GPU} to prevent OOM")
 else:
-    BATCH_SIZE_GPU = BATCH_SIZE  # Use original batch size for CPU
+    # CPU training - use smaller batch size
+    BATCH_SIZE_GPU = 16  # Smaller batch size for CPU
     print(f"CPU training: Using batch size {BATCH_SIZE_GPU}")
 
 # SimCLR specific parameters
@@ -395,6 +413,31 @@ def cleanup_memory():
     except Exception as e:
         print(f"Memory cleanup error: {e}")
 
+def restart_with_cpu():
+    """Restart the script with CPU-only mode when CuDNN fails."""
+    print("\n" + "="*60)
+    print("CuDNN ISSUE DETECTED - RESTARTING WITH CPU-ONLY MODE")
+    print("="*60)
+    print("The current TensorFlow session cannot be modified after GPU initialization.")
+    print("Restarting the script with CPU-only configuration...")
+    print("="*60)
+    
+    # Set environment variable to force CPU mode
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    
+    # Restart the script
+    import sys
+    import subprocess
+    
+    try:
+        # Restart with CPU-only mode
+        subprocess.run([sys.executable] + sys.argv, env=os.environ.copy())
+        sys.exit(0)
+    except Exception as e:
+        print(f"Failed to restart script: {e}")
+        print("Please manually restart the script with: CUDA_VISIBLE_DEVICES=-1 python self_supervised_model.py")
+        sys.exit(1)
+
 def force_cpu_training():
     """Force CPU-only training when GPU/CuDNN fails."""
     global use_gpu, gpus
@@ -420,6 +463,8 @@ def force_cpu_training():
         
     except Exception as e:
         print(f"Error forcing CPU training: {e}")
+        # If we can't modify the session, restart the script
+        restart_with_cpu()
 
 # -------------------- Main Function --------------------
 def main():
@@ -495,8 +540,12 @@ def main():
     print(f"- Total SSL steps: {ssl_steps_per_epoch * SSL_EPOCHS}")
     print(f"- Batch size: {BATCH_SIZE_GPU}")
     print(f"- Learning rate: {LR_SSL}")
-    print(f"- Hardware: {'GPU (RTX 4090)' if use_gpu else 'CPU'}")
-    print(f"- Mixed precision: {'Enabled (float16)' if use_gpu else 'Disabled (CPU)'}")
+    if FORCE_CPU_MODE:
+        print(f"- Hardware: CPU (forced due to CuDNN issues)")
+        print(f"- Mixed precision: Disabled (CPU mode)")
+    else:
+        print(f"- Hardware: {'GPU (RTX 4090)' if use_gpu else 'CPU'}")
+        print(f"- Mixed precision: {'Enabled (float16)' if use_gpu else 'Disabled (CPU)'}")
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting SSL training...\n")
     
@@ -519,8 +568,8 @@ def main():
         
         # Check if it's a CuDNN/GPU issue
         if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
-            print("Detected CuDNN/GPU issue. Forcing CPU training...")
-            force_cpu_training()
+            print("Detected CuDNN/GPU issue. Restarting with CPU-only mode...")
+            restart_with_cpu()
             
             # Recreate model for CPU training
             print("Recreating model for CPU training...")
@@ -756,8 +805,12 @@ def main():
     print(f"- Total training steps: {steps_per_epoch * FINE_TUNE_EPOCHS}")
     print(f"- Batch size: {BATCH_SIZE_GPU}")
     print(f"- Learning rate: {LR_FINE_TUNE}")
-    print(f"- Hardware: {'GPU (RTX 4090)' if use_gpu else 'CPU'}")
-    print(f"- Mixed precision: {'Enabled (float16)' if use_gpu else 'Disabled (CPU)'}")
+    if FORCE_CPU_MODE:
+        print(f"- Hardware: CPU (forced due to CuDNN issues)")
+        print(f"- Mixed precision: Disabled (CPU mode)")
+    else:
+        print(f"- Hardware: {'GPU (RTX 4090)' if use_gpu else 'CPU'}")
+        print(f"- Mixed precision: {'Enabled (float16)' if use_gpu else 'Disabled (CPU)'}")
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting training...\n")
 
@@ -780,8 +833,8 @@ def main():
         
         # Check if it's a CuDNN/GPU issue
         if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
-            print("Detected CuDNN/GPU issue during fine-tuning. Forcing CPU training...")
-            force_cpu_training()
+            print("Detected CuDNN/GPU issue during fine-tuning. Restarting with CPU-only mode...")
+            restart_with_cpu()
             
             # Recreate model for CPU training
             print("Recreating fine-tuning model for CPU...")
@@ -881,8 +934,8 @@ def main():
         
         # Check if it's a CuDNN/GPU issue
         if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
-            print("Detected CuDNN/GPU issue during unfrozen training. Forcing CPU training...")
-            force_cpu_training()
+            print("Detected CuDNN/GPU issue during unfrozen training. Restarting with CPU-only mode...")
+            restart_with_cpu()
             
             # Further reduce batch size for CPU
             BATCH_SIZE_GPU = 4  # Very small batch size for CPU
