@@ -221,3 +221,10 @@ outputs/
 *.pth
 *.ckpt
 *.onnx
+outputs/
+*.keras
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.onnx
