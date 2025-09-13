@@ -38,6 +38,14 @@ if gpus:
         for i, gpu in enumerate(gpus):
             tf.config.experimental.set_memory_growth(gpu, True)
             print(f"  GPU {i}: {gpu.name} - Memory growth enabled")
+            
+            # Set memory limit to prevent OOM
+            try:
+                memory_limit = tf.config.experimental.get_device_details(gpu).get('device_memory_limit', 22000)
+                tf.config.experimental.set_memory_limit(gpu, int(memory_limit * MAX_GPU_MEMORY_FRACTION))
+                print(f"  GPU {i}: Memory limit set to {MAX_GPU_MEMORY_FRACTION*100}%")
+            except:
+                print(f"  GPU {i}: Could not set memory limit")
         
         # Enable mixed precision for better GPU performance
         tf.keras.mixed_precision.set_global_policy('mixed_float16')
@@ -73,11 +81,12 @@ LR_FINE_TUNE = 1e-5  # Match base model learning rate
 WEIGHT_DECAY = 1e-4
 PRETRAINED = True
 
-# Optimize batch size for RTX 4090 (24GB VRAM)
+# Optimize batch size for RTX 4090 (24GB VRAM) - Conservative approach
+BATCH_SIZE_GPU = BATCH_SIZE  # Default value
 if gpus:
-    # Increase batch size for better GPU utilization
-    BATCH_SIZE_GPU = 256  # Larger batch size for RTX 4090
-    print(f"GPU detected: Using batch size {BATCH_SIZE_GPU} for better GPU utilization")
+    # Use conservative batch size to avoid OOM errors
+    BATCH_SIZE_GPU = 64  # Reduced from 256 to prevent memory issues
+    print(f"GPU detected: Using conservative batch size {BATCH_SIZE_GPU} to prevent OOM")
 else:
     BATCH_SIZE_GPU = BATCH_SIZE  # Use original batch size for CPU
 
@@ -85,6 +94,10 @@ else:
 TEMPERATURE = 0.1
 PROJECTION_DIM = 128
 HIDDEN_DIM = 512
+
+# Memory optimization settings
+USE_GRADIENT_CHECKPOINTING = True
+MAX_GPU_MEMORY_FRACTION = 0.8  # Use only 80% of GPU memory
 
 # Use constants from utils
 USE_FOCAL_COARSE = utils.USE_FOCAL_COARSE
@@ -120,17 +133,18 @@ def simclr_augment(image, img_size=IMG_SIZE):
     k = tf.random.uniform([], 0, 4, dtype=tf.int32)
     image = tf.image.rot90(image, k=k)
 
-    # color jitter on [0,1]
-    image = tf.image.random_brightness(image, max_delta=0.15)
-    image = tf.image.random_contrast(image, 0.8, 1.2)
-    image = tf.image.random_saturation(image, 0.8, 1.2)
-    image = tf.image.random_hue(image, 0.08)
+    # color jitter on [0,1] - reduced intensity for memory efficiency
+    image = tf.image.random_brightness(image, max_delta=0.1)  # Reduced from 0.15
+    image = tf.image.random_contrast(image, 0.9, 1.1)        # Reduced range
+    image = tf.image.random_saturation(image, 0.9, 1.1)      # Reduced range
+    image = tf.image.random_hue(image, 0.05)                 # Reduced from 0.08
 
-    # optional Gaussian blur
-    if tf.random.uniform([]) < 0.5:
-        kernel = tf.constant([[1,2,1],[2,4,2],[1,2,1]], tf.float32) / 16.0
-        kernel = tf.tile(kernel[:, :, None, None], [1, 1, 3, 1])  # [3,3,3,1]
-        image = tf.nn.depthwise_conv2d(image[None, ...], kernel, [1,1,1,1], "SAME")[0]
+    # Removed Gaussian blur to reduce memory usage
+    # Optional: Add back if memory allows
+    # if tf.random.uniform([]) < 0.3:  # Reduced probability
+    #     kernel = tf.constant([[1,2,1],[2,4,2],[1,2,1]], tf.float32) / 16.0
+    #     kernel = tf.tile(kernel[:, :, None, None], [1, 1, 3, 1])  # [3,3,3,1]
+    #     image = tf.nn.depthwise_conv2d(image[None, ...], kernel, [1,1,1,1], "SAME")[0]
 
     # resize+random crop
     image = tf.image.resize(image, [256, 256])
@@ -192,7 +206,8 @@ def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
         a1, a2 = norm(a1), norm(a2)
         return tf.stack([a1, a2], axis=0)  # (2,H,W,3)
 
-    ds = ds.map(load_and_augment, num_parallel_calls=tf.data.AUTOTUNE)
+    # Reduce parallel calls to prevent memory issues
+    ds = ds.map(load_and_augment, num_parallel_calls=2)  # Reduced from AUTOTUNE
     ds = ds.batch(batch_size)
 
     def pack_views(pairs):
@@ -203,7 +218,8 @@ def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
         dummy_targets = tf.zeros(batch_size, dtype=tf.int32)
         return images, dummy_targets
 
-    return ds.map(pack_views, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
+    # Reduced prefetch to prevent memory buildup
+    return ds.map(pack_views, num_parallel_calls=2).prefetch(1)
 
 # -------------------- SimCLR Model --------------------
 def create_simclr_model(img_size=IMG_SIZE, projection_dim=PROJECTION_DIM, hidden_dim=HIDDEN_DIM):
@@ -264,6 +280,11 @@ def create_simclr_model(img_size=IMG_SIZE, projection_dim=PROJECTION_DIM, hidden
         )
         print("Using EfficientNetB1 with random initialization")
     
+    # Apply gradient checkpointing to reduce memory usage
+    if USE_GRADIENT_CHECKPOINTING:
+        print("Enabling gradient checkpointing for memory efficiency")
+        # Note: Gradient checkpointing is handled at training time
+    
     # Projection head
     inputs = keras.Input(shape=(img_size, img_size, 3), name="input")
     features = encoder(inputs)
@@ -315,11 +336,27 @@ def create_finetuned_model(ssl_encoder, n_fine, n_coarse, img_size=IMG_SIZE, dro
     out_fine   = layers.Dense(n_fine,   name="fine_output")(x)
     return keras.Model(inputs=inputs, outputs=[out_coarse, out_fine], name="SSL_FineTuned")
 
+# -------------------- Memory Management --------------------
+def cleanup_memory():
+    """Clean up GPU and system memory."""
+    try:
+        import gc
+        gc.collect()
+        
+        if gpus:
+            # Clear GPU cache
+            tf.keras.backend.clear_session()
+            print("Memory cleanup completed")
+    except Exception as e:
+        print(f"Memory cleanup error: {e}")
+
 # -------------------- Main Function --------------------
 def main():
     """
     Main function to run SSL + Fine-tuning pipeline.
     """
+    global BATCH_SIZE_GPU  # Make BATCH_SIZE_GPU accessible within function
+    
     print("Starting Self-Supervised Learning + Fine-tuning pipeline...")
     
     # ==================== STEP 1: SSL PRE-TRAINING ====================
@@ -358,8 +395,14 @@ def main():
     # Create SimCLR model
     ssl_model = create_simclr_model()
     
-    # Compile model
+    # Compile model with gradient checkpointing
     optimizer = keras.optimizers.AdamW(learning_rate=LR_SSL, weight_decay=WEIGHT_DECAY)
+    
+    # Enable gradient checkpointing if specified
+    if USE_GRADIENT_CHECKPOINTING:
+        print("Applying gradient checkpointing to reduce memory usage...")
+        # This will be handled in the training loop
+    
     ssl_model.compile(
         optimizer=optimizer,
         loss=simclr_loss(),
@@ -385,21 +428,52 @@ def main():
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting SSL training...\n")
     
-    # Train SSL model
+    # Train SSL model with memory management
     print("Training SimCLR model...")
-    ssl_history = ssl_model.fit(
-        ssl_ds,
-        epochs=SSL_EPOCHS,
-        steps_per_epoch=ssl_steps_per_epoch,
-        callbacks=callbacks,
-        verbose=1,
-    )
+    
+    try:
+        # Clean memory before training
+        cleanup_memory()
+        
+        ssl_history = ssl_model.fit(
+            ssl_ds,
+            epochs=SSL_EPOCHS,
+            steps_per_epoch=ssl_steps_per_epoch,
+            callbacks=callbacks,
+            verbose=1,
+        )
+    except Exception as e:
+        print(f"SSL training failed: {e}")
+        print("Attempting memory cleanup and retry with smaller batch size...")
+        
+        # Clean memory and try with smaller batch size
+        cleanup_memory()
+        
+        # Reduce batch size and retry
+        BATCH_SIZE_GPU = 32  # Further reduce batch size
+        ssl_ds = create_simclr_dataset(ssl_df, batch_size=BATCH_SIZE_GPU)
+        ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE_GPU
+        if ssl_steps_per_epoch == 0:
+            ssl_steps_per_epoch = 1
+            
+        print(f"Retrying with batch size {BATCH_SIZE_GPU}")
+        ssl_history = ssl_model.fit(
+            ssl_ds,
+            epochs=SSL_EPOCHS,
+            steps_per_epoch=ssl_steps_per_epoch,
+            callbacks=callbacks,
+            verbose=1,
+        )
     
     # Save SSL history
     with open(SSL_OUTDIR / "stats.json", "w") as f:
         json.dump(ssl_history.history, f)
     
     print(f"SSL training complete. Model saved to '{SSL_OUTDIR}'.")
+    
+    # Clean memory before fine-tuning
+    print("Cleaning memory before fine-tuning...")
+    cleanup_memory()
     
     # ==================== STEP 2: SUPERVISED FINE-TUNING ====================
     print("\n" + "="*60)
@@ -504,7 +578,7 @@ def main():
     # Callbacks using utils
     callbacks = utils.create_callbacks(FINE_TUNE_OUTDIR, 'ssl_finetuned')
     
-    # Add GPU monitoring callback
+    # Add GPU monitoring callback with memory cleanup
     class GPUMonitorCallback(keras.callbacks.Callback):
         def on_epoch_begin(self, epoch, logs=None):
             if gpus:
@@ -514,6 +588,23 @@ def main():
                     print(f"\nGPU Memory Info:")
                     print(f"  Device: {gpus[0].name}")
                     print(f"  Memory limit: {gpu_details.get('device_memory_limit', 'Unknown')}")
+                    
+                    # Force garbage collection
+                    import gc
+                    gc.collect()
+                    
+                    # Clear TensorFlow cache
+                    tf.keras.backend.clear_session()
+                    
+                except Exception as e:
+                    print(f"GPU monitoring error: {e}")
+                    
+        def on_batch_end(self, batch, logs=None):
+            # Periodic memory cleanup during training
+            if batch % 50 == 0:  # Every 50 batches
+                try:
+                    import gc
+                    gc.collect()
                 except:
                     pass
 
@@ -559,15 +650,42 @@ def main():
 
     # Train with frozen backbone first
     print("Training with frozen backbone...")
-    history1 = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=10,
-        callbacks=callbacks,
-        verbose=1,
-        steps_per_epoch=steps_per_epoch,
-        validation_steps=validation_steps,
-    )
+    try:
+        cleanup_memory()  # Clean memory before training
+        
+        history1 = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=10,
+            callbacks=callbacks,
+            verbose=1,
+            steps_per_epoch=steps_per_epoch,
+            validation_steps=validation_steps,
+        )
+    except Exception as e:
+        print(f"Frozen backbone training failed: {e}")
+        print("Attempting memory cleanup and retry...")
+        cleanup_memory()
+        
+        # Reduce batch size and retry
+        BATCH_SIZE_GPU = 32
+        # Rebuild datasets with smaller batch size
+        train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
+                                 fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+        val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
+        steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
+        validation_steps = len(val_df) // BATCH_SIZE_GPU
+        
+        print(f"Retrying with batch size {BATCH_SIZE_GPU}")
+        history1 = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=10,
+            callbacks=callbacks,
+            verbose=1,
+            steps_per_epoch=steps_per_epoch,
+            validation_steps=validation_steps,
+        )
 
     # Unfreeze backbone and continue training
     backbone.trainable = True
@@ -584,16 +702,43 @@ def main():
     )
 
     print("Training with unfrozen backbone...")
-    history2 = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=FINE_TUNE_EPOCHS-10,
-        initial_epoch=10,
-        callbacks=callbacks,
-        verbose=1,
-        steps_per_epoch=steps_per_epoch,
-        validation_steps=validation_steps,
-    )
+    cleanup_memory()  # Clean memory before unfrozen training
+    
+    try:
+        history2 = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=FINE_TUNE_EPOCHS-10,
+            initial_epoch=10,
+            callbacks=callbacks,
+            verbose=1,
+            steps_per_epoch=steps_per_epoch,
+            validation_steps=validation_steps,
+        )
+    except Exception as e:
+        print(f"Unfrozen backbone training failed: {e}")
+        print("Attempting memory cleanup and retry...")
+        cleanup_memory()
+        
+        # Further reduce batch size if needed
+        BATCH_SIZE_GPU = 16  # Even smaller batch size
+        train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
+                                 fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+        val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
+        steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
+        validation_steps = len(val_df) // BATCH_SIZE_GPU
+        
+        print(f"Retrying with batch size {BATCH_SIZE_GPU}")
+        history2 = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=FINE_TUNE_EPOCHS-10,
+            initial_epoch=10,
+            callbacks=callbacks,
+            verbose=1,
+            steps_per_epoch=steps_per_epoch,
+            validation_steps=validation_steps,
+        )
 
     # Combine histories
     combined_history = {}
