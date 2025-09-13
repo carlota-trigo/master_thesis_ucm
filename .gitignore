@@ -205,3 +205,19 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ML Project specific
+outputs/
+logs/
+models/
+*.keras
+*.h5
+*.pkl
+*.jobliboutputs/
+outputs/
+*.keras
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.onnx
