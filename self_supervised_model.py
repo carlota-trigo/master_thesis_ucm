@@ -142,26 +142,34 @@ def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
     df = df.copy()
     def resolve_path(p):
         p = str(p)
-        # If it's already an absolute path, check if it exists
-        if os.path.isabs(p):
+        
+        # Check if it's a Windows path (starts with drive letter like C:)
+        if ':' in p and ('\\' in p or p.startswith('C:') or p.startswith('D:')):
+            # Windows path - extract just the filename
+            if '\\' in p:
+                filename = p.split('\\')[-1]
+            else:
+                filename = p.split('/')[-1]  # fallback for forward slashes
+            
+            linux_path = str(IMAGE_PATH / filename)
+            if os.path.exists(linux_path):
+                return linux_path
+            else:
+                print(f"Warning: Could not find image file: {filename}")
+                return linux_path  # Return the constructed path anyway
+        
+        # If it's already an absolute Unix path, check if it exists
+        elif os.path.isabs(p):
             if os.path.exists(p):
                 return p
             else:
-                # If it's a Windows path on Linux, extract just the filename
-                # Handle both Windows and Unix path separators
-                if '\\' in p:
-                    # Windows path - split by backslash and take last part
-                    filename = p.split('\\')[-1]
-                else:
-                    # Unix path - use os.path.basename
-                    filename = os.path.basename(p)
-                
+                filename = os.path.basename(p)
                 linux_path = str(IMAGE_PATH / filename)
                 if os.path.exists(linux_path):
                     return linux_path
                 else:
                     print(f"Warning: Could not find image file: {filename}")
-                    return linux_path  # Return the constructed path anyway
+                    return linux_path
         
         # For relative paths, construct the full path
         return str(IMAGE_PATH / p)
