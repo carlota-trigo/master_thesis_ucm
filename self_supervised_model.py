@@ -75,7 +75,13 @@ try:
                 print(f"  CuDNN test: FAILED - {cudnn_error}")
                 print("  CuDNN version mismatch detected. Disabling GPU acceleration.")
                 # Disable GPU to force CPU training
-                tf.config.experimental.set_visible_devices([], 'GPU')
+                try:
+                    tf.config.experimental.set_visible_devices([], 'GPU')
+                    # Force CPU-only mode
+                    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+                    print("  GPU disabled - falling back to CPU training")
+                except:
+                    pass
                 gpus = None
                 use_gpu = False
             
@@ -389,6 +395,32 @@ def cleanup_memory():
     except Exception as e:
         print(f"Memory cleanup error: {e}")
 
+def force_cpu_training():
+    """Force CPU-only training when GPU/CuDNN fails."""
+    global use_gpu, gpus
+    try:
+        print("\n" + "="*60)
+        print("FORCING CPU TRAINING DUE TO GPU/CuDNN ISSUES")
+        print("="*60)
+        
+        # Disable GPU completely
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+        tf.config.experimental.set_visible_devices([], 'GPU')
+        
+        # Reinitialize TensorFlow with CPU only
+        tf.keras.backend.clear_session()
+        
+        use_gpu = False
+        gpus = None
+        
+        print("✓ GPU disabled successfully")
+        print("✓ Training will use CPU only")
+        print("✓ This will be slower but more stable")
+        print("="*60)
+        
+    except Exception as e:
+        print(f"Error forcing CPU training: {e}")
+
 # -------------------- Main Function --------------------
 def main():
     """
@@ -484,26 +516,59 @@ def main():
         )
     except Exception as e:
         print(f"SSL training failed: {e}")
-        print("Attempting memory cleanup and retry with smaller batch size...")
         
-        # Clean memory and try with smaller batch size
-        cleanup_memory()
-        
-        # Reduce batch size and retry
-        BATCH_SIZE_GPU = 32  # Further reduce batch size
-        ssl_ds = create_simclr_dataset(ssl_df, batch_size=BATCH_SIZE_GPU)
-        ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE_GPU
-        if ssl_steps_per_epoch == 0:
-            ssl_steps_per_epoch = 1
+        # Check if it's a CuDNN/GPU issue
+        if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
+            print("Detected CuDNN/GPU issue. Forcing CPU training...")
+            force_cpu_training()
             
-        print(f"Retrying with batch size {BATCH_SIZE_GPU}")
-        ssl_history = ssl_model.fit(
-            ssl_ds,
-            epochs=SSL_EPOCHS,
-            steps_per_epoch=ssl_steps_per_epoch,
-            callbacks=callbacks,
-            verbose=1,
-        )
+            # Recreate model for CPU training
+            print("Recreating model for CPU training...")
+            ssl_model = create_simclr_model()
+            
+            # Compile model for CPU
+            optimizer = keras.optimizers.AdamW(learning_rate=LR_SSL, weight_decay=WEIGHT_DECAY)
+            ssl_model.compile(
+                optimizer=optimizer,
+                loss=simclr_loss(),
+            )
+            
+            # Recreate dataset with CPU batch size
+            BATCH_SIZE_GPU = 16  # Smaller batch size for CPU
+            ssl_ds = create_simclr_dataset(ssl_df, batch_size=BATCH_SIZE_GPU)
+            ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE_GPU
+            if ssl_steps_per_epoch == 0:
+                ssl_steps_per_epoch = 1
+            
+            print(f"Retrying with CPU training, batch size {BATCH_SIZE_GPU}")
+            ssl_history = ssl_model.fit(
+                ssl_ds,
+                epochs=SSL_EPOCHS,
+                steps_per_epoch=ssl_steps_per_epoch,
+                callbacks=callbacks,
+                verbose=1,
+            )
+        else:
+            print("Attempting memory cleanup and retry with smaller batch size...")
+            
+            # Clean memory and try with smaller batch size
+            cleanup_memory()
+            
+            # Reduce batch size and retry
+            BATCH_SIZE_GPU = 32  # Further reduce batch size
+            ssl_ds = create_simclr_dataset(ssl_df, batch_size=BATCH_SIZE_GPU)
+            ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE_GPU
+            if ssl_steps_per_epoch == 0:
+                ssl_steps_per_epoch = 1
+                
+            print(f"Retrying with batch size {BATCH_SIZE_GPU}")
+            ssl_history = ssl_model.fit(
+                ssl_ds,
+                epochs=SSL_EPOCHS,
+                steps_per_epoch=ssl_steps_per_epoch,
+                callbacks=callbacks,
+                verbose=1,
+            )
     
     # Save SSL history
     with open(SSL_OUTDIR / "stats.json", "w") as f:
@@ -712,28 +777,76 @@ def main():
         )
     except Exception as e:
         print(f"Frozen backbone training failed: {e}")
-        print("Attempting memory cleanup and retry...")
-        cleanup_memory()
         
-        # Reduce batch size and retry
-        BATCH_SIZE_GPU = 32
-        # Rebuild datasets with smaller batch size
-        train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
-                                 fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-        val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
-        steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
-        validation_steps = len(val_df) // BATCH_SIZE_GPU
-        
-        print(f"Retrying with batch size {BATCH_SIZE_GPU}")
-        history1 = model.fit(
-            train_ds,
-            validation_data=val_ds,
-            epochs=10,
-            callbacks=callbacks,
-            verbose=1,
-            steps_per_epoch=steps_per_epoch,
-            validation_steps=validation_steps,
-        )
+        # Check if it's a CuDNN/GPU issue
+        if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
+            print("Detected CuDNN/GPU issue during fine-tuning. Forcing CPU training...")
+            force_cpu_training()
+            
+            # Recreate model for CPU training
+            print("Recreating fine-tuning model for CPU...")
+            model = create_finetuned_model(ssl_model, N_DX_CLASSES, N_LESION_TYPE_CLASSES)
+            
+            # Recompile for CPU
+            if USE_FOCAL_COARSE:
+                coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
+            else:
+                coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+            
+            optimizer = keras.optimizers.AdamW(learning_rate=LR_FINE_TUNE, weight_decay=WEIGHT_DECAY)
+            model.compile(
+                optimizer=optimizer,
+                loss={
+                    "coarse_output": coarse_loss,
+                    "fine_output": utils.masked_sparse_ce_with_oe,
+                },
+                metrics={
+                    "coarse_output": ["sparse_categorical_accuracy"],
+                    "fine_output": ["sparse_categorical_accuracy"],
+                },
+            )
+            
+            # Rebuild datasets with CPU batch size
+            BATCH_SIZE_GPU = 8  # Very small batch size for CPU
+            train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
+                                     fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+            val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
+            steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
+            validation_steps = len(val_df) // BATCH_SIZE_GPU
+            
+            print(f"Retrying fine-tuning with CPU, batch size {BATCH_SIZE_GPU}")
+            history1 = model.fit(
+                train_ds,
+                validation_data=val_ds,
+                epochs=10,
+                callbacks=callbacks,
+                verbose=1,
+                steps_per_epoch=steps_per_epoch,
+                validation_steps=validation_steps,
+            )
+        else:
+            print("Attempting memory cleanup and retry...")
+            cleanup_memory()
+            
+            # Reduce batch size and retry
+            BATCH_SIZE_GPU = 32
+            # Rebuild datasets with smaller batch size
+            train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
+                                     fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+            val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
+            steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
+            validation_steps = len(val_df) // BATCH_SIZE_GPU
+            
+            print(f"Retrying with batch size {BATCH_SIZE_GPU}")
+            history1 = model.fit(
+                train_ds,
+                validation_data=val_ds,
+                epochs=10,
+                callbacks=callbacks,
+                verbose=1,
+                steps_per_epoch=steps_per_epoch,
+                validation_steps=validation_steps,
+            )
 
     # Unfreeze backbone and continue training
     backbone.trainable = True
@@ -765,28 +878,54 @@ def main():
         )
     except Exception as e:
         print(f"Unfrozen backbone training failed: {e}")
-        print("Attempting memory cleanup and retry...")
-        cleanup_memory()
         
-        # Further reduce batch size if needed
-        BATCH_SIZE_GPU = 16  # Even smaller batch size
-        train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
-                                 fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-        val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
-        steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
-        validation_steps = len(val_df) // BATCH_SIZE_GPU
-        
-        print(f"Retrying with batch size {BATCH_SIZE_GPU}")
-        history2 = model.fit(
-            train_ds,
-            validation_data=val_ds,
-            epochs=FINE_TUNE_EPOCHS-10,
-            initial_epoch=10,
-            callbacks=callbacks,
-            verbose=1,
-            steps_per_epoch=steps_per_epoch,
-            validation_steps=validation_steps,
-        )
+        # Check if it's a CuDNN/GPU issue
+        if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
+            print("Detected CuDNN/GPU issue during unfrozen training. Forcing CPU training...")
+            force_cpu_training()
+            
+            # Further reduce batch size for CPU
+            BATCH_SIZE_GPU = 4  # Very small batch size for CPU
+            train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
+                                     fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+            val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
+            steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
+            validation_steps = len(val_df) // BATCH_SIZE_GPU
+            
+            print(f"Retrying unfrozen training with CPU, batch size {BATCH_SIZE_GPU}")
+            history2 = model.fit(
+                train_ds,
+                validation_data=val_ds,
+                epochs=FINE_TUNE_EPOCHS-10,
+                initial_epoch=10,
+                callbacks=callbacks,
+                verbose=1,
+                steps_per_epoch=steps_per_epoch,
+                validation_steps=validation_steps,
+            )
+        else:
+            print("Attempting memory cleanup and retry...")
+            cleanup_memory()
+            
+            # Further reduce batch size if needed
+            BATCH_SIZE_GPU = 16  # Even smaller batch size
+            train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
+                                     fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+            val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
+            steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
+            validation_steps = len(val_df) // BATCH_SIZE_GPU
+            
+            print(f"Retrying with batch size {BATCH_SIZE_GPU}")
+            history2 = model.fit(
+                train_ds,
+                validation_data=val_ds,
+                epochs=FINE_TUNE_EPOCHS-10,
+                initial_epoch=10,
+                callbacks=callbacks,
+                verbose=1,
+                steps_per_epoch=steps_per_epoch,
+                validation_steps=validation_steps,
+            )
 
     # Combine histories
     combined_history = {}
