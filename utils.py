@@ -189,7 +189,24 @@ def augment_minority(img):
 def resolve_image_path(path):
     """Resolve image path to absolute path."""
     p = str(path)
-    return p if os.path.isabs(p) else str(IMAGE_PATH / p)
+    
+    # If it's already an absolute path, check if it exists
+    if os.path.isabs(p):
+        if os.path.exists(p):
+            return p
+        else:
+            # If it's a Windows path on Linux, extract just the filename
+            # and construct the Linux path
+            filename = os.path.basename(p)
+            linux_path = str(IMAGE_PATH / filename)
+            if os.path.exists(linux_path):
+                return linux_path
+            else:
+                print(f"Warning: Could not find image file: {filename}")
+                return linux_path  # Return the constructed path anyway
+    
+    # For relative paths, construct the full path
+    return str(IMAGE_PATH / p)
 
 def apply_fine_oversampling(df, fine_oversampling):
     """Apply oversampling to fine-grained minority classes."""

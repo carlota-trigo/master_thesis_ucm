@@ -11,8 +11,7 @@ import json, os, time
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-# Disable mixed precision for CPU training (can cause slowdowns)
-# tf.keras.mixed_precision.set_global_policy('mixed_float16')
+# Mixed precision will be enabled if GPU is available
 from tensorflow import keras
 from tensorflow.keras import layers
 from sklearn.model_selection import train_test_split
@@ -22,14 +21,39 @@ import matplotlib.pyplot as plt
 # -------------------- Repro --------------------
 utils.set_seed(utils.SEED)
 
-# Configure GPU memory growth for better memory management
+# Configure GPU for optimal performance
+print("="*60)
+print("GPU CONFIGURATION")
+print("="*60)
+
+# List all available devices
+print("Available devices:")
+for device in tf.config.list_physical_devices():
+    print(f"  - {device}")
+
+# Configure GPU memory growth and mixed precision
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
+    print(f"\nFound {len(gpus)} GPU(s):")
     try:
-        for gpu in gpus:
+        for i, gpu in enumerate(gpus):
             tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"  GPU {i}: {gpu.name} - Memory growth enabled")
+        
+        # Enable mixed precision for better GPU performance
+        tf.keras.mixed_precision.set_global_policy('mixed_float16')
+        print("  Mixed precision enabled (float16)")
+        
+        # Set GPU as default device
+        with tf.device('/GPU:0'):
+            print("  Using GPU:0 as default device")
+            
     except RuntimeError as e:
-        print(f"GPU memory growth configuration failed: {e}")
+        print(f"GPU configuration failed: {e}")
+        print("Falling back to CPU training")
+else:
+    print("\nNo GPU found. Training will use CPU.")
+    print("Note: CPU training will be significantly slower.")
 
 # -------------------- Config --------------------
 # Use constants from utils
@@ -49,6 +73,14 @@ LR_SSL = 1e-3
 LR_FINE_TUNE = 1e-5  # Match base model learning rate
 WEIGHT_DECAY = 1e-4
 PRETRAINED = True
+
+# Optimize batch size for RTX 4090 (24GB VRAM)
+if gpus:
+    # Increase batch size for better GPU utilization
+    BATCH_SIZE_GPU = 256  # Larger batch size for RTX 4090
+    print(f"GPU detected: Using batch size {BATCH_SIZE_GPU} for better GPU utilization")
+else:
+    BATCH_SIZE_GPU = BATCH_SIZE  # Use original batch size for CPU
 
 # SimCLR specific parameters
 TEMPERATURE = 0.1
@@ -111,7 +143,23 @@ def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
     df = df.copy()
     def resolve_path(p):
         p = str(p)
-        return p if os.path.isabs(p) else str(IMAGE_PATH / p)
+        # If it's already an absolute path, check if it exists
+        if os.path.isabs(p):
+            if os.path.exists(p):
+                return p
+            else:
+                # If it's a Windows path on Linux, extract just the filename
+                # and construct the Linux path
+                filename = os.path.basename(p)
+                linux_path = str(IMAGE_PATH / filename)
+                if os.path.exists(linux_path):
+                    return linux_path
+                else:
+                    print(f"Warning: Could not find image file: {filename}")
+                    return linux_path  # Return the constructed path anyway
+        
+        # For relative paths, construct the full path
+        return str(IMAGE_PATH / p)
     df["image_path"] = df["image_path"].astype(str).apply(resolve_path)
 
     paths = df["image_path"].tolist()
@@ -275,8 +323,8 @@ def main():
     if len(ssl_df) < 100:
         print(f"⚠️  Warning: Very small dataset ({len(ssl_df)} samples). Training may be unstable.")
     
-    # Create SSL dataset
-    ssl_ds = create_simclr_dataset(ssl_df)
+    # Create SSL dataset with GPU-optimized batch size
+    ssl_ds = create_simclr_dataset(ssl_df, batch_size=BATCH_SIZE_GPU)
     
     # Create SimCLR model
     ssl_model = create_simclr_model()
@@ -294,7 +342,7 @@ def main():
     callbacks = utils.create_callbacks(SSL_OUTDIR, 'ssl_simclr', monitor="loss")
     
     # Calculate steps per epoch for SSL
-    ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE
+    ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE_GPU
     if ssl_steps_per_epoch == 0:
         ssl_steps_per_epoch = 1  # Minimum 1 step per epoch
     print(f"SSL steps per epoch: {ssl_steps_per_epoch}")
@@ -302,9 +350,9 @@ def main():
     print(f"\nSSL Training Configuration:")
     print(f"- Steps per epoch: {ssl_steps_per_epoch}")
     print(f"- Total SSL steps: {ssl_steps_per_epoch * SSL_EPOCHS}")
-    print(f"- Batch size: {BATCH_SIZE}")
+    print(f"- Batch size: {BATCH_SIZE_GPU}")
     print(f"- Learning rate: {LR_SSL}")
-    print(f"- Mixed precision: Disabled (for consistency with base model)")
+    print(f"- Mixed precision: {'Enabled (GPU)' if gpus else 'Disabled (CPU)'}")
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting SSL training...\n")
     
@@ -399,7 +447,7 @@ def main():
     else:
         coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
-    steps_per_epoch = len(train_df) // BATCH_SIZE
+    steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
     if steps_per_epoch == 0:
         steps_per_epoch = 1  # Minimum 1 step per epoch
     total_steps = FINE_TUNE_EPOCHS * steps_per_epoch
@@ -427,6 +475,19 @@ def main():
     # Callbacks using utils
     callbacks = utils.create_callbacks(FINE_TUNE_OUTDIR, 'ssl_finetuned')
     
+    # Add GPU monitoring callback
+    class GPUMonitorCallback(keras.callbacks.Callback):
+        def on_epoch_begin(self, epoch, logs=None):
+            if gpus:
+                try:
+                    # Get GPU memory info
+                    gpu_details = tf.config.experimental.get_device_details(gpus[0])
+                    print(f"\nGPU Memory Info:")
+                    print(f"  Device: {gpus[0].name}")
+                    print(f"  Memory limit: {gpu_details.get('device_memory_limit', 'Unknown')}")
+                except:
+                    pass
+
     # Add custom progress callback for detailed tracking
     class ProgressCallback(keras.callbacks.Callback):
         def on_epoch_begin(self, epoch, logs=None):
@@ -447,12 +508,13 @@ def main():
                 print(f"- Val Fine Acc: {logs.get('val_fine_output_sparse_categorical_accuracy', 0):.4f}")
     
     callbacks.append(ProgressCallback())
+    callbacks.append(GPUMonitorCallback())
 
     # Calculate steps for better progress tracking
-    steps_per_epoch = len(train_df) // BATCH_SIZE
+    steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
     if steps_per_epoch == 0:
         steps_per_epoch = 1  # Minimum 1 step per epoch
-    validation_steps = len(val_df) // BATCH_SIZE
+    validation_steps = len(val_df) // BATCH_SIZE_GPU
     if validation_steps == 0:
         validation_steps = 1  # Minimum 1 validation step
     
@@ -460,9 +522,9 @@ def main():
     print(f"- Steps per epoch: {steps_per_epoch}")
     print(f"- Validation steps: {validation_steps}")
     print(f"- Total training steps: {steps_per_epoch * FINE_TUNE_EPOCHS}")
-    print(f"- Batch size: {BATCH_SIZE}")
+    print(f"- Batch size: {BATCH_SIZE_GPU}")
     print(f"- Learning rate: {LR_FINE_TUNE}")
-    print(f"- Mixed precision: Disabled (for consistency with base model)")
+    print(f"- Mixed precision: {'Enabled (GPU)' if gpus else 'Disabled (CPU)'}")
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting training...\n")
 
