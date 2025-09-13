@@ -5,6 +5,19 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN warnings
 # GPU memory optimization
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
+# Fix CuDNN version mismatch issues
+os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
+
+# Fallback options for CuDNN issues
+try:
+    import tensorflow as tf
+    # Test if CuDNN is working
+    tf.config.experimental.list_physical_devices('GPU')
+except Exception as e:
+    print(f"CuDNN initialization warning: {e}")
+    print("Will attempt to continue with fallback options...")
+
 import utils
 from pathlib import Path
 import json, os, time
@@ -30,37 +43,60 @@ print("Available devices:")
 for device in tf.config.list_physical_devices():
     print(f"  - {device}")
 
-# Configure GPU memory growth and mixed precision
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-    print(f"\nFound {len(gpus)} GPU(s):")
-    try:
-        for i, gpu in enumerate(gpus):
-            tf.config.experimental.set_memory_growth(gpu, True)
-            print(f"  GPU {i}: {gpu.name} - Memory growth enabled")
+# Configure GPU memory growth and mixed precision with CuDNN fallback
+gpus = None
+use_gpu = False
+
+try:
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        print(f"\nFound {len(gpus)} GPU(s):")
+        try:
+            for i, gpu in enumerate(gpus):
+                tf.config.experimental.set_memory_growth(gpu, True)
+                print(f"  GPU {i}: {gpu.name} - Memory growth enabled")
+                
+                # Set memory limit to prevent OOM
+                try:
+                    memory_limit = tf.config.experimental.get_device_details(gpu).get('device_memory_limit', 22000)
+                    tf.config.experimental.set_memory_limit(gpu, int(memory_limit * MAX_GPU_MEMORY_FRACTION))
+                    print(f"  GPU {i}: Memory limit set to {MAX_GPU_MEMORY_FRACTION*100}%")
+                except:
+                    print(f"  GPU {i}: Could not set memory limit")
             
-            # Set memory limit to prevent OOM
+            # Test CuDNN by creating a simple operation
             try:
-                memory_limit = tf.config.experimental.get_device_details(gpu).get('device_memory_limit', 22000)
-                tf.config.experimental.set_memory_limit(gpu, int(memory_limit * MAX_GPU_MEMORY_FRACTION))
-                print(f"  GPU {i}: Memory limit set to {MAX_GPU_MEMORY_FRACTION*100}%")
-            except:
-                print(f"  GPU {i}: Could not set memory limit")
-        
-        # Enable mixed precision for better GPU performance
-        tf.keras.mixed_precision.set_global_policy('mixed_float16')
-        print("  Mixed precision enabled (float16)")
-        
-        # Set GPU as default device
-        with tf.device('/GPU:0'):
-            print("  Using GPU:0 as default device")
+                with tf.device('/GPU:0'):
+                    test_tensor = tf.ones((1, 1, 1, 1))
+                    _ = tf.nn.conv2d(test_tensor, tf.ones((1, 1, 1, 1)), strides=1, padding='SAME')
+                print("  CuDNN test: SUCCESS")
+                use_gpu = True
+            except Exception as cudnn_error:
+                print(f"  CuDNN test: FAILED - {cudnn_error}")
+                print("  CuDNN version mismatch detected. Disabling GPU acceleration.")
+                # Disable GPU to force CPU training
+                tf.config.experimental.set_visible_devices([], 'GPU')
+                gpus = None
+                use_gpu = False
             
-    except RuntimeError as e:
-        print(f"GPU configuration failed: {e}")
-        print("Falling back to CPU training")
-else:
-    print("\nNo GPU found. Training will use CPU.")
-    print("Note: CPU training will be significantly slower.")
+            if use_gpu:
+                # Enable mixed precision for better GPU performance
+                tf.keras.mixed_precision.set_global_policy('mixed_float16')
+                print("  Mixed precision enabled (float16)")
+                print("  Using GPU:0 as default device")
+            
+        except RuntimeError as e:
+            print(f"GPU configuration failed: {e}")
+            print("Falling back to CPU training")
+            use_gpu = False
+    else:
+        print("\nNo GPU found. Training will use CPU.")
+        print("Note: CPU training will be significantly slower.")
+        use_gpu = False
+except Exception as e:
+    print(f"GPU detection failed: {e}")
+    print("Falling back to CPU training")
+    use_gpu = False
 
 # -------------------- Config --------------------
 # Use constants from utils
@@ -81,14 +117,15 @@ LR_FINE_TUNE = 1e-5  # Match base model learning rate
 WEIGHT_DECAY = 1e-4
 PRETRAINED = True
 
-# Optimize batch size for RTX 4090 (24GB VRAM) - Conservative approach
+# Optimize batch size based on available hardware
 BATCH_SIZE_GPU = BATCH_SIZE  # Default value
-if gpus:
+if use_gpu:
     # Use conservative batch size to avoid OOM errors
     BATCH_SIZE_GPU = 64  # Reduced from 256 to prevent memory issues
     print(f"GPU detected: Using conservative batch size {BATCH_SIZE_GPU} to prevent OOM")
 else:
     BATCH_SIZE_GPU = BATCH_SIZE  # Use original batch size for CPU
+    print(f"CPU training: Using batch size {BATCH_SIZE_GPU}")
 
 # SimCLR specific parameters
 TEMPERATURE = 0.1
@@ -343,10 +380,12 @@ def cleanup_memory():
         import gc
         gc.collect()
         
-        if gpus:
+        if use_gpu and gpus:
             # Clear GPU cache
             tf.keras.backend.clear_session()
-            print("Memory cleanup completed")
+            print("GPU memory cleanup completed")
+        else:
+            print("CPU memory cleanup completed")
     except Exception as e:
         print(f"Memory cleanup error: {e}")
 
@@ -424,7 +463,8 @@ def main():
     print(f"- Total SSL steps: {ssl_steps_per_epoch * SSL_EPOCHS}")
     print(f"- Batch size: {BATCH_SIZE_GPU}")
     print(f"- Learning rate: {LR_SSL}")
-    print(f"- Mixed precision: {'Enabled (GPU)' if gpus else 'Disabled (CPU)'}")
+    print(f"- Hardware: {'GPU (RTX 4090)' if use_gpu else 'CPU'}")
+    print(f"- Mixed precision: {'Enabled (float16)' if use_gpu else 'Disabled (CPU)'}")
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting SSL training...\n")
     
@@ -581,7 +621,7 @@ def main():
     # Add GPU monitoring callback with memory cleanup
     class GPUMonitorCallback(keras.callbacks.Callback):
         def on_epoch_begin(self, epoch, logs=None):
-            if gpus:
+            if use_gpu and gpus:
                 try:
                     # Get GPU memory info
                     gpu_details = tf.config.experimental.get_device_details(gpus[0])
@@ -598,6 +638,13 @@ def main():
                     
                 except Exception as e:
                     print(f"GPU monitoring error: {e}")
+            else:
+                # CPU training - just do basic cleanup
+                try:
+                    import gc
+                    gc.collect()
+                except:
+                    pass
                     
         def on_batch_end(self, batch, logs=None):
             # Periodic memory cleanup during training
@@ -644,7 +691,8 @@ def main():
     print(f"- Total training steps: {steps_per_epoch * FINE_TUNE_EPOCHS}")
     print(f"- Batch size: {BATCH_SIZE_GPU}")
     print(f"- Learning rate: {LR_FINE_TUNE}")
-    print(f"- Mixed precision: {'Enabled (GPU)' if gpus else 'Disabled (CPU)'}")
+    print(f"- Hardware: {'GPU (RTX 4090)' if use_gpu else 'CPU'}")
+    print(f"- Mixed precision: {'Enabled (float16)' if use_gpu else 'Disabled (CPU)'}")
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting training...\n")
 
