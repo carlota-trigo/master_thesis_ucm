@@ -66,56 +66,56 @@ if FORCE_CPU_MODE:
 else:
     try:
         gpus = tf.config.experimental.list_physical_devices('GPU')
-    if gpus:
-        print(f"\nFound {len(gpus)} GPU(s):")
-        try:
-            for i, gpu in enumerate(gpus):
-                tf.config.experimental.set_memory_growth(gpu, True)
-                print(f"  GPU {i}: {gpu.name} - Memory growth enabled")
-                
-                # Set memory limit to prevent OOM
-                try:
-                    memory_limit = tf.config.experimental.get_device_details(gpu).get('device_memory_limit', 22000)
-                    tf.config.experimental.set_memory_limit(gpu, int(memory_limit * MAX_GPU_MEMORY_FRACTION))
-                    print(f"  GPU {i}: Memory limit set to {MAX_GPU_MEMORY_FRACTION*100}%")
-                except:
-                    print(f"  GPU {i}: Could not set memory limit")
-            
-            # Test CuDNN by creating a simple operation
+        if gpus:
+            print(f"\nFound {len(gpus)} GPU(s):")
             try:
-                with tf.device('/GPU:0'):
-                    test_tensor = tf.ones((1, 1, 1, 1))
-                    _ = tf.nn.conv2d(test_tensor, tf.ones((1, 1, 1, 1)), strides=1, padding='SAME')
-                print("  CuDNN test: SUCCESS")
-                use_gpu = True
-            except Exception as cudnn_error:
-                print(f"  CuDNN test: FAILED - {cudnn_error}")
-                print("  CuDNN version mismatch detected. Disabling GPU acceleration.")
-                # Disable GPU to force CPU training
+                for i, gpu in enumerate(gpus):
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                    print(f"  GPU {i}: {gpu.name} - Memory growth enabled")
+                    
+                    # Set memory limit to prevent OOM
+                    try:
+                        memory_limit = tf.config.experimental.get_device_details(gpu).get('device_memory_limit', 22000)
+                        tf.config.experimental.set_memory_limit(gpu, int(memory_limit * MAX_GPU_MEMORY_FRACTION))
+                        print(f"  GPU {i}: Memory limit set to {MAX_GPU_MEMORY_FRACTION*100}%")
+                    except:
+                        print(f"  GPU {i}: Could not set memory limit")
+                
+                # Test CuDNN by creating a simple operation
                 try:
-                    tf.config.experimental.set_visible_devices([], 'GPU')
-                    # Force CPU-only mode
-                    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-                    print("  GPU disabled - falling back to CPU training")
-                except:
-                    pass
-                gpus = None
+                    with tf.device('/GPU:0'):
+                        test_tensor = tf.ones((1, 1, 1, 1))
+                        _ = tf.nn.conv2d(test_tensor, tf.ones((1, 1, 1, 1)), strides=1, padding='SAME')
+                    print("  CuDNN test: SUCCESS")
+                    use_gpu = True
+                except Exception as cudnn_error:
+                    print(f"  CuDNN test: FAILED - {cudnn_error}")
+                    print("  CuDNN version mismatch detected. Disabling GPU acceleration.")
+                    # Disable GPU to force CPU training
+                    try:
+                        tf.config.experimental.set_visible_devices([], 'GPU')
+                        # Force CPU-only mode
+                        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+                        print("  GPU disabled - falling back to CPU training")
+                    except:
+                        pass
+                    gpus = None
+                    use_gpu = False
+                
+                if use_gpu:
+                    # Enable mixed precision for better GPU performance
+                    tf.keras.mixed_precision.set_global_policy('mixed_float16')
+                    print("  Mixed precision enabled (float16)")
+                    print("  Using GPU:0 as default device")
+                
+            except RuntimeError as e:
+                print(f"GPU configuration failed: {e}")
+                print("Falling back to CPU training")
                 use_gpu = False
-            
-            if use_gpu:
-                # Enable mixed precision for better GPU performance
-                tf.keras.mixed_precision.set_global_policy('mixed_float16')
-                print("  Mixed precision enabled (float16)")
-                print("  Using GPU:0 as default device")
-            
-        except RuntimeError as e:
-            print(f"GPU configuration failed: {e}")
-            print("Falling back to CPU training")
+        else:
+            print("\nNo GPU found. Training will use CPU.")
+            print("Note: CPU training will be significantly slower.")
             use_gpu = False
-    else:
-        print("\nNo GPU found. Training will use CPU.")
-        print("Note: CPU training will be significantly slower.")
-        use_gpu = False
     except Exception as e:
         print(f"GPU detection failed: {e}")
         print("Falling back to CPU training")
