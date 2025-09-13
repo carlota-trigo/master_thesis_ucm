@@ -11,6 +11,8 @@ import json, os, time
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+# Disable mixed precision for CPU training (can cause slowdowns)
+# tf.keras.mixed_precision.set_global_policy('mixed_float16')
 from tensorflow import keras
 from tensorflow.keras import layers
 from sklearn.model_selection import train_test_split
@@ -134,7 +136,11 @@ def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
 
     def pack_views(pairs):
         v1, v2 = pairs[:,0,...], pairs[:,1,...]
-        return tf.concat([v1, v2], axis=0)  # (2B,H,W,3)
+        images = tf.concat([v1, v2], axis=0)  # (2B,H,W,3)
+        # Create dummy targets for SimCLR loss function
+        batch_size = tf.shape(images)[0]
+        dummy_targets = tf.zeros(batch_size, dtype=tf.int32)
+        return images, dummy_targets
 
     return ds.map(pack_views, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
 
@@ -194,8 +200,9 @@ def create_simclr_model(img_size=IMG_SIZE, projection_dim=PROJECTION_DIM, hidden
     return model
 
 def simclr_loss(temperature=TEMPERATURE):
-    def loss_fn(_, z):
-        z = tf.nn.l2_normalize(z, axis=1)
+    def loss_fn(y_true, y_pred):
+        # SimCLR doesn't use y_true, but we need to accept it for Keras compatibility
+        z = tf.nn.l2_normalize(y_pred, axis=1)
         n = tf.shape(z)[0] // 2
         z1, z2 = z[:n], z[n:]
         z = tf.concat([z1, z2], axis=0)                  # (2n,d)
@@ -279,41 +286,27 @@ def main():
     ssl_model.compile(
         optimizer=optimizer,
         loss=simclr_loss(),
+        # No metrics needed for SSL training
     )
     print(ssl_model.summary())
 
-    # Callbacks
-    callbacks = [
-        keras.callbacks.ModelCheckpoint(
-            filepath=str(SSL_OUTDIR / "ssl_best_model.keras"),
-            save_best_only=True,
-            monitor="loss",
-            mode="min",
-            verbose=1,
-        ),
-        keras.callbacks.CSVLogger(str(SSL_OUTDIR / "ssl_history.csv")),
-        keras.callbacks.TensorBoard(
-            log_dir=str(SSL_OUTDIR / "ssl_tensorboard_logs"),
-            histogram_freq=1,
-            write_graph=True,
-            write_images=True,
-            update_freq='epoch',
-        ),
-        keras.callbacks.EarlyStopping(
-            monitor="loss",
-            mode="min",
-            patience=10,
-            min_delta=1e-4,
-            restore_best_weights=True,
-            verbose=1,
-        ),
-    ]
+    # Callbacks using utils (consistent with base_model)
+    callbacks = utils.create_callbacks(SSL_OUTDIR, 'ssl_simclr', monitor="loss")
     
     # Calculate steps per epoch for SSL
     ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE
     if ssl_steps_per_epoch == 0:
         ssl_steps_per_epoch = 1  # Minimum 1 step per epoch
     print(f"SSL steps per epoch: {ssl_steps_per_epoch}")
+    
+    print(f"\nSSL Training Configuration:")
+    print(f"- Steps per epoch: {ssl_steps_per_epoch}")
+    print(f"- Total SSL steps: {ssl_steps_per_epoch * SSL_EPOCHS}")
+    print(f"- Batch size: {BATCH_SIZE}")
+    print(f"- Learning rate: {LR_SSL}")
+    print(f"- Mixed precision: Disabled (for consistency with base model)")
+    print(f"- Early stopping: Enabled (patience=10)")
+    print(f"\nStarting SSL training...\n")
     
     # Train SSL model
     print("Training SimCLR model...")
