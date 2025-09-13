@@ -29,7 +29,7 @@ SEED = 999
 # Data paths
 DATA_DIR = Path("../data")
 PREPARED_CSV = DATA_DIR / "training_prepared_data.csv"
-IMAGE_PATH = DATA_DIR.joinpath("images", "images")
+IMAGE_PATH = DATA_DIR.joinpath("images")
 
 # Model configuration
 IMG_SIZE = 224

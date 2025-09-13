@@ -148,8 +148,14 @@ def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
                 return p
             else:
                 # If it's a Windows path on Linux, extract just the filename
-                # and construct the Linux path
-                filename = os.path.basename(p)
+                # Handle both Windows and Unix path separators
+                if '\\' in p:
+                    # Windows path - split by backslash and take last part
+                    filename = p.split('\\')[-1]
+                else:
+                    # Unix path - use os.path.basename
+                    filename = os.path.basename(p)
+                
                 linux_path = str(IMAGE_PATH / filename)
                 if os.path.exists(linux_path):
                     return linux_path
@@ -196,36 +202,52 @@ def create_simclr_model(img_size=IMG_SIZE, projection_dim=PROJECTION_DIM, hidden
     """
     Create SimCLR model with encoder and projection head.
     """
-    # Encoder (backbone) - Fix EfficientNet compatibility issue
+    # Encoder (backbone) - Robust EfficientNet loading with fallbacks
     if PRETRAINED:
-        try:
-            # Try loading EfficientNet with explicit input shape
-            encoder = tf.keras.applications.EfficientNetB1(
-                include_top=False,
-                weights="imagenet",
-                input_shape=(img_size, img_size, 3),
-            )
-            print("Using EfficientNetB1 with ImageNet weights")
-        except Exception as e:
-            print(f"Warning: Could not load EfficientNet weights: {e}")
-            print("Trying alternative approach...")
+        encoder = None
+        encoder_name = None
+        
+        # Try different EfficientNet variants in order of preference
+        efficientnet_variants = [
+            ("EfficientNetB1", lambda: tf.keras.applications.EfficientNetB1(
+                include_top=False, weights="imagenet", input_shape=(img_size, img_size, 3))),
+            ("EfficientNetB0", lambda: tf.keras.applications.EfficientNetB0(
+                include_top=False, weights="imagenet", input_shape=(img_size, img_size, 3))),
+            ("EfficientNetB1 (no weights)", lambda: tf.keras.applications.EfficientNetB1(
+                include_top=False, weights=None, input_shape=(img_size, img_size, 3))),
+        ]
+        
+        for name, model_fn in efficientnet_variants:
             try:
-                # Alternative: Create model without weights first, then load manually
-                encoder = tf.keras.applications.EfficientNetB1(
-                    include_top=False,
-                    weights=None,
-                    input_shape=(img_size, img_size, 3),
-                )
-                print("Using EfficientNetB1 with random initialization")
-            except Exception as e2:
-                print(f"Error creating EfficientNet: {e2}")
-                print("Falling back to ResNet50...")
+                encoder = model_fn()
+                encoder_name = name
+                print(f"Successfully loaded {name}")
+                break
+            except Exception as e:
+                print(f"Failed to load {name}: {e}")
+                continue
+        
+        # Final fallback to ResNet50 if all EfficientNet variants fail
+        if encoder is None:
+            try:
                 encoder = tf.keras.applications.ResNet50(
                     include_top=False,
                     weights="imagenet",
                     input_shape=(img_size, img_size, 3),
                 )
-                print("Using ResNet50 with ImageNet weights")
+                encoder_name = "ResNet50"
+                print("Using ResNet50 with ImageNet weights as fallback")
+            except Exception as e:
+                print(f"Even ResNet50 failed: {e}")
+                print("Using ResNet50 with random initialization")
+                encoder = tf.keras.applications.ResNet50(
+                    include_top=False,
+                    weights=None,
+                    input_shape=(img_size, img_size, 3),
+                )
+                encoder_name = "ResNet50 (no weights)"
+        
+        print(f"Final encoder: {encoder_name}")
     else:
         encoder = tf.keras.applications.EfficientNetB1(
             include_top=False,
