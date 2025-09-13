@@ -143,12 +143,43 @@ def create_simclr_model(img_size=IMG_SIZE, projection_dim=PROJECTION_DIM, hidden
     """
     Create SimCLR model with encoder and projection head.
     """
-    # Encoder (backbone)
-    encoder = tf.keras.applications.efficientnet.EfficientNetB1(
-        include_top=False,
-        weights="imagenet" if PRETRAINED else None,
-        input_shape=(img_size, img_size, 3),
-    )
+    # Encoder (backbone) - Fix EfficientNet compatibility issue
+    if PRETRAINED:
+        try:
+            # Try loading EfficientNet with explicit input shape
+            encoder = tf.keras.applications.EfficientNetB1(
+                include_top=False,
+                weights="imagenet",
+                input_shape=(img_size, img_size, 3),
+            )
+            print("Using EfficientNetB1 with ImageNet weights")
+        except Exception as e:
+            print(f"Warning: Could not load EfficientNet weights: {e}")
+            print("Trying alternative approach...")
+            try:
+                # Alternative: Create model without weights first, then load manually
+                encoder = tf.keras.applications.EfficientNetB1(
+                    include_top=False,
+                    weights=None,
+                    input_shape=(img_size, img_size, 3),
+                )
+                print("Using EfficientNetB1 with random initialization")
+            except Exception as e2:
+                print(f"Error creating EfficientNet: {e2}")
+                print("Falling back to ResNet50...")
+                encoder = tf.keras.applications.ResNet50(
+                    include_top=False,
+                    weights="imagenet",
+                    input_shape=(img_size, img_size, 3),
+                )
+                print("Using ResNet50 with ImageNet weights")
+    else:
+        encoder = tf.keras.applications.EfficientNetB1(
+            include_top=False,
+            weights=None,
+            input_shape=(img_size, img_size, 3),
+        )
+        print("Using EfficientNetB1 with random initialization")
     
     # Projection head
     inputs = keras.Input(shape=(img_size, img_size, 3), name="input")
@@ -183,8 +214,16 @@ def simclr_loss(temperature=TEMPERATURE):
 # -------------------- Fine-tuning Model --------------------
 def create_finetuned_model(ssl_encoder, n_fine, n_coarse, img_size=IMG_SIZE, dropout=0.2):
     inputs = keras.Input(shape=(img_size, img_size, 3), name="input")
-    # get the nested EfficientNet by name
-    backbone = ssl_encoder.get_layer("efficientnetb1")
+    # get the backbone by name - handle both EfficientNet and ResNet50
+    try:
+        backbone = ssl_encoder.get_layer("efficientnetb1")
+    except:
+        try:
+            backbone = ssl_encoder.get_layer("resnet50")
+        except:
+            # Fallback: get the first layer that's not Input
+            backbone = ssl_encoder.layers[1]
+    
     x = backbone(inputs)
     x = layers.GlobalAveragePooling2D(name="avg_pool")(x)
     x = layers.Dropout(dropout, name="top_dropout")(x)
