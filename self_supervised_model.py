@@ -11,9 +11,8 @@ import json, os, time
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-# Mixed precision will be enabled if GPU is available
-from tensorflow import keras
-from tensorflow.keras import layers
+import keras
+from keras import layers
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt

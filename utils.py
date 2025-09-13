@@ -10,8 +10,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+import keras
+from keras import layers
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score
 import matplotlib.pyplot as plt
