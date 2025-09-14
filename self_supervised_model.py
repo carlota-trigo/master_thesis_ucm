@@ -133,7 +133,7 @@ BATCH_SIZE = utils.BATCH_SIZE
 SSL_OUTDIR = Path("outputs/ssl_simclr")
 FINE_TUNE_OUTDIR = Path("outputs/ssl_finetuned")
 
-SSL_EPOCHS = 25
+SSL_EPOCHS = 15
 FINE_TUNE_EPOCHS = 25  # Match base model epochs
 LR_SSL = 1e-3
 LR_FINE_TUNE = 1e-5  # Match base model learning rate
@@ -147,8 +147,8 @@ if use_gpu and not FORCE_CPU_MODE:
     BATCH_SIZE_GPU = 64  # Reduced from 256 to prevent memory issues
     print(f"GPU detected: Using conservative batch size {BATCH_SIZE_GPU} to prevent OOM")
 else:
-    # CPU training - use smaller batch size
-    BATCH_SIZE_GPU = 16  # Smaller batch size for CPU
+    # CPU training - use optimized batch size
+    BATCH_SIZE_GPU = 64  # Optimized batch size for CPU
     print(f"CPU training: Using batch size {BATCH_SIZE_GPU}")
 
 # SimCLR specific parameters
