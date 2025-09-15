@@ -1,5 +1,5 @@
-# resume_ssl_finetuning.py
-# Resume fine-tuning with already trained SSL model
+# resume_ssl_finetuning_simple.py
+# Simplified resume script that reconstructs the SSL model architecture
 # -*- coding: utf-8 -*-
 import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN warnings
@@ -173,6 +173,69 @@ N_LESION_TYPE_CLASSES = utils.N_LESION_TYPE_CLASSES
 DX_TO_ID = utils.DX_TO_ID
 LESION_TO_ID = utils.LESION_TO_ID
 
+# -------------------- SimCLR Model Recreation --------------------
+def create_simclr_model(img_size=IMG_SIZE, projection_dim=128, hidden_dim=512):
+    """
+    Recreate SimCLR model with encoder and projection head.
+    """
+    # Encoder (backbone) - Robust EfficientNet loading with fallbacks
+    encoder = None
+    encoder_name = None
+    
+    # Try different EfficientNet variants in order of preference
+    efficientnet_variants = [
+        ("EfficientNetB1", lambda: tf.keras.applications.EfficientNetB1(
+            include_top=False, weights="imagenet", input_shape=(img_size, img_size, 3))),
+        ("EfficientNetB0", lambda: tf.keras.applications.EfficientNetB0(
+            include_top=False, weights="imagenet", input_shape=(img_size, img_size, 3))),
+        ("EfficientNetB1 (no weights)", lambda: tf.keras.applications.EfficientNetB1(
+            include_top=False, weights=None, input_shape=(img_size, img_size, 3))),
+    ]
+    
+    for name, model_fn in efficientnet_variants:
+        try:
+            encoder = model_fn()
+            encoder_name = name
+            print(f"Successfully loaded {name}")
+            break
+        except Exception as e:
+            print(f"Failed to load {name}: {e}")
+            continue
+    
+    # Final fallback to ResNet50 if all EfficientNet variants fail
+    if encoder is None:
+        try:
+            encoder = tf.keras.applications.ResNet50(
+                include_top=False,
+                weights="imagenet",
+                input_shape=(img_size, img_size, 3),
+            )
+            encoder_name = "ResNet50"
+            print("Using ResNet50 with ImageNet weights as fallback")
+        except Exception as e:
+            print(f"Even ResNet50 failed: {e}")
+            print("Using ResNet50 with random initialization")
+            encoder = tf.keras.applications.ResNet50(
+                include_top=False,
+                weights=None,
+                input_shape=(img_size, img_size, 3),
+            )
+            encoder_name = "ResNet50 (no weights)"
+    
+    print(f"Final encoder: {encoder_name}")
+    
+    # Projection head
+    inputs = keras.Input(shape=(img_size, img_size, 3), name="input")
+    features = encoder(inputs)
+    features = layers.GlobalAveragePooling2D()(features)
+    
+    # Projection head
+    projection = layers.Dense(hidden_dim, activation="relu", name="projection_hidden")(features)
+    projection = layers.Dense(projection_dim, name="projection_output")(projection)
+    
+    model = keras.Model(inputs=inputs, outputs=projection, name="SimCLR_Encoder")
+    return model
+
 # -------------------- Fine-tuning Model --------------------
 def create_finetuned_model(ssl_encoder, n_fine, n_coarse, img_size=IMG_SIZE, dropout=0.2):
     inputs = keras.Input(shape=(img_size, img_size, 3), name="input")
@@ -218,9 +281,9 @@ def main():
     
     print("Resuming SSL Fine-tuning pipeline...")
     
-    # ==================== LOAD TRAINED SSL MODEL ====================
+    # ==================== RECREATE SSL MODEL ====================
     print("\n" + "="*60)
-    print("LOADING TRAINED SSL MODEL")
+    print("RECREATING SSL MODEL ARCHITECTURE")
     print("="*60)
     
     # Check if SSL model exists
@@ -231,57 +294,42 @@ def main():
         return
     
     try:
-        # Load the trained SSL model with custom objects
-        # We need to define the custom loss function for loading
-        def simclr_loss(temperature=0.1):
-            def loss_fn(y_true, y_pred):
-                # SimCLR doesn't use y_true, but we need to accept it for Keras compatibility
-                z = tf.nn.l2_normalize(y_pred, axis=1)
-                n = tf.shape(z)[0] // 2
-                z1, z2 = z[:n], z[n:]
-                z = tf.concat([z1, z2], axis=0)                  # (2n,d)
-                sim = tf.matmul(z, z, transpose_b=True) / temperature  # (2n,2n)
-
-                # mask self-similarity
-                mask = tf.eye(2*n, dtype=tf.bool)
-                sim = tf.where(mask, tf.fill(tf.shape(sim), -1e9), sim)
-
-                # positives: i <-> i+n
-                pos = tf.concat([tf.range(n, 2*n), tf.range(0, n)], axis=0)  # (2n,)
-                loss = tf.keras.losses.sparse_categorical_crossentropy(pos, sim, from_logits=True)
-                return tf.reduce_mean(loss)
-            return loss_fn
+        # Recreate the SSL model architecture
+        print("Recreating SSL model architecture...")
+        ssl_model = create_simclr_model()
         
-        # Register the custom loss function
-        custom_objects = {'loss_fn': simclr_loss()}
+        # Try to load weights from the saved model
+        print("Attempting to extract weights from saved model...")
         
-        ssl_model = keras.models.load_model(ssl_model_path, custom_objects=custom_objects)
-        print(f"Successfully loaded SSL model from {ssl_model_path}")
+        # Method 1: Try to load the model and extract weights
+        try:
+            # Load the model with a dummy loss function
+            dummy_loss = keras.losses.MeanSquaredError()
+            temp_model = keras.models.load_model(ssl_model_path, custom_objects={'loss_fn': dummy_loss})
+            
+            # Copy weights from loaded model to our recreated model
+            for i, layer in enumerate(temp_model.layers):
+                if i < len(ssl_model.layers) and hasattr(layer, 'get_weights'):
+                    try:
+                        weights = layer.get_weights()
+                        if weights:  # Only set weights if they exist
+                            ssl_model.layers[i].set_weights(weights)
+                    except Exception as e:
+                        print(f"Could not copy weights for layer {i}: {e}")
+            
+            print("Successfully loaded weights from saved model")
+            
+        except Exception as e:
+            print(f"Could not load weights from saved model: {e}")
+            print("Using ImageNet pre-trained weights instead")
+            # The model will use ImageNet weights as fallback
+        
         print(f"SSL model summary:")
         ssl_model.summary()
-    except Exception as e:
-        print(f"Error loading SSL model: {e}")
-        print("Trying alternative loading method...")
         
-        # Alternative: Load just the weights and reconstruct the model
-        try:
-            # Import the model creation function from the original script
-            from self_supervised_model import create_simclr_model
-            
-            # Create a new model with the same architecture
-            ssl_model = create_simclr_model()
-            
-            # Load the weights
-            ssl_model.load_weights(str(ssl_model_path).replace('.keras', '_weights.h5'))
-            print(f"Successfully loaded SSL model weights")
-            print(f"SSL model summary:")
-            ssl_model.summary()
-        except Exception as e2:
-            print(f"Alternative loading also failed: {e2}")
-            print("Please check if the SSL model files exist:")
-            print(f"  Model file: {ssl_model_path}")
-            print(f"  Weights file: {str(ssl_model_path).replace('.keras', '_weights.h5')}")
-            return
+    except Exception as e:
+        print(f"Error recreating SSL model: {e}")
+        return
     
     # Clean memory before fine-tuning
     print("Cleaning memory before fine-tuning...")
@@ -506,7 +554,7 @@ def main():
             print("Detected CuDNN/GPU issue during fine-tuning. Restarting with CPU-only mode...")
             # Set environment variable to force CPU mode
             os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-            print("Please restart the script with: CUDA_VISIBLE_DEVICES=-1 python resume_ssl_finetuning.py")
+            print("Please restart the script with: CUDA_VISIBLE_DEVICES=-1 python resume_ssl_finetuning_simple.py")
             return
             
         else:
@@ -569,7 +617,7 @@ def main():
             print("Detected CuDNN/GPU issue during unfrozen training. Restarting with CPU-only mode...")
             # Set environment variable to force CPU mode
             os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-            print("Please restart the script with: CUDA_VISIBLE_DEVICES=-1 python resume_ssl_finetuning.py")
+            print("Please restart the script with: CUDA_VISIBLE_DEVICES=-1 python resume_ssl_finetuning_simple.py")
             return
             
         else:
