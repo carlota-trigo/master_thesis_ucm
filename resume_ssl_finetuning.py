@@ -232,8 +232,11 @@ def main():
     
     try:
         # Load the trained SSL model with custom objects
-        # We need to define the custom loss function for loading
-        def simclr_loss(temperature=0.1):
+        # We need to define the custom loss function for loading - EXACT COPY from original
+        TEMPERATURE = 0.1  # Same as original
+        
+        @tf.keras.utils.register_keras_serializable()
+        def simclr_loss(temperature=TEMPERATURE):
             def loss_fn(y_true, y_pred):
                 # SimCLR doesn't use y_true, but we need to accept it for Keras compatibility
                 z = tf.nn.l2_normalize(y_pred, axis=1)
@@ -245,6 +248,7 @@ def main():
                 # mask self-similarity
                 mask = tf.eye(2*n, dtype=tf.bool)
                 sim = tf.where(mask, tf.fill(tf.shape(sim), -1e9), sim)
+
 
                 # positives: i <-> i+n
                 pos = tf.concat([tf.range(n, 2*n), tf.range(0, n)], axis=0)  # (2n,)
