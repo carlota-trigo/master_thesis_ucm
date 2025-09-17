@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Basic -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DermaScan – AI Dermatology</title>
+  <meta name="description" content="Upload a skin lesion image and get AI-driven classification with confidence and clinical guidance." />
+  <meta name="theme-color" content="#207060" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="DermaScan – AI Dermatology" />
+  <meta property="og:description" content="Upload a skin lesion image and get AI-driven classification with confidence and clinical guidance." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="about:blank" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="DermaScan – AI Dermatology" />
+  <meta name="twitter:description" content="Upload a skin lesion image and get AI-driven classification with confidence and clinical guidance." />
+
+  <!-- Fonts & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+  <style>
+    /* ===============================
+       Design Tokens
+    =============================== */
+    :root {
+      /* Brand */
+      --primary: #207060;
+      --primary-light: #40A090;
+      --primary-lighter: #60C0B0;
+      --primary-dark: #1A5A4D;
+
+      /* Accent / Status */
+      --accent: #E03040;
+      --accent-light: #F05060;
+      --accent-dark: #C02030;
+      --success: #207060;
+      --warning: #F59E0B;
+      --error: #E03040;
+      --info: #3B82F6;
+
+      /* Text */
+      --text-primary: #404048;
+      --text-secondary: #6B7280;
+      --text-muted: #9CA3AF;
+
+      /* Surfaces */
+      --background: #FFFFFF;
+      --surface: #F8FAFC;
+      --surface-elevated: #FFFFFF;
+
+      /* Border / Shadows */
+      --border: #E2E8F0;
+      --border-focus: #207060;
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+      --shadow-primary: 0 4px 12px rgba(32, 112, 96, 0.35);
+
+      /* Spacing scale */
+      --space-1: 0.25rem;
+      --space-2: 0.5rem;
+      --space-3: 0.75rem;
+      --space-4: 1rem;
+      --space-5: 1.25rem;
+      --space-6: 1.5rem;
+      --space-8: 2rem;
+      --space-10: 2.5rem;
+      --radius: 1rem;
+      --radius-sm: .5rem;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --background: #0B1117;
+        --surface: #0F1620;
+        --surface-elevated: #121C27;
+        --text-primary: #E5E7EB;
+        --text-secondary: #B6BDC7;
+        --text-muted: #7A8594;
+        --border: #1F2A37;
+        --shadow: none;
+        --shadow-lg: none;
+        --shadow-primary: none;
+      }
+    }
+
+    /* ===============================
+       Resets & Base
+    =============================== */
+    *, *::before, *::after { box-sizing: border-box; }
+    html:focus-within { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: var(--text-primary);
+      background: var(--background);
+      line-height: 1.5;
+    }
+    img, svg, video { max-width: 100%; height: auto; }
+    a { color: inherit; }
+    :focus-visible {
+      outline: 3px solid var(--border-focus);
+      outline-offset: 2px;
+      border-radius: 6px;
+    }
+    .sr-only {
+      position: absolute !important;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+    }
+    .skip-link {
+      position: absolute;
+      top: -40px; left: 0;
+      background: var(--primary);
+      color: #fff;
+      padding: var(--space-2) var(--space-4);
+      border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+      z-index: 999;
+    }
+    .skip-link:focus { top: 0; }
+
+    .app {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding-bottom: 0;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 var(--space-8); }
+
+    /* ===============================
+       Header
+    =============================== */
+    header.app-header {
+      position: sticky; top: 0; z-index: 100;
+      backdrop-filter: blur(10px);
+      background: color-mix(in oklab, var(--surface-elevated) 95%, transparent);
+      border-bottom: 1px solid var(--border);
+    }
+    .header-content {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: var(--space-3) 0;
+    }
+    .logo { display: flex; align-items: center; gap: var(--space-3); }
+    .logo img.logo-svg { width: 200px; height: auto; display: block; }
+    nav[aria-label="Primary"] { display: flex; gap: var(--space-8); }
+    nav[aria-label="Primary"] a {
+      text-decoration: none; color: var(--text-secondary); font-weight: 500;
+    }
+    nav[aria-label="Primary"] a:hover { color: var(--primary); }
+
+    /* ===============================
+       Hero
+    =============================== */
+    .hero {
+      padding: 2rem 0;
+      min-height: calc(100vh - 80px);
+      display: flex;
+      align-items: center;
+    }
+    .hero-grid {
+      display: grid; gap: 3rem;
+      grid-template-columns: 1.2fr 1fr;
+      align-items: center;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3.25rem);
+      margin: 0 0 var(--space-3) 0;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.01em;
+    }
+    .hero p.lead {
+      font-size: 1.125rem; color: var(--text-secondary); margin-bottom: var(--space-6);
+    }
+    .hero-stats {
+      display: flex; gap: var(--space-8); flex-wrap: wrap;
+    }
+    .stat { text-align: center; }
+    .stat-number { font-size: 2rem; font-weight: 700; color: var(--primary); display: block; }
+    .stat-label { font-size: .875rem; color: var(--text-secondary); letter-spacing: .04em; text-transform: uppercase; }
+
+    /* ===============================
+       Upload
+    =============================== */
+    form#uploadForm { display: grid; gap: var(--space-4); }
+    .upload-area {
+      background: var(--primary);
+      border: 2px dashed color-mix(in oklab, #fff 35%, transparent);
+      border-radius: var(--radius);
+      padding: 3rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: transform .2s ease, box-shadow .2s ease, background .2s ease, border-color .2s ease;
+      position: relative; overflow: hidden;
+      color: #fff;
+    }
+    .upload-area:hover {
+      background: var(--primary-dark);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-primary);
+      border-color: color-mix(in oklab, #fff 80%, transparent);
+    }
+    .upload-area.dragover {
+      background: var(--primary-dark);
+      border-color: color-mix(in oklab, #fff 80%, transparent);
+    }
+    .upload-content i { font-size: 2.5rem; margin-bottom: .5rem; }
+    .upload-content h3 { margin: .25rem 0; font-size: 1.25rem; }
+    .upload-content p { opacity: .85; margin: 0; }
+    .helper-text { color: var(--text-secondary); font-size: .875rem; text-align: center; }
+
+    .actions { display: flex; gap: var(--space-3); flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+      border: 1px solid transparent; background: var(--primary); color: #fff;
+      padding: .75rem 1rem; border-radius: .5rem; font-weight: 600; cursor: pointer;
+      transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: var(--shadow); background: var(--primary-dark); }
+    .btn.secondary { background: transparent; color: var(--text-primary); border-color: var(--border); }
+    .btn.secondary:hover { border-color: var(--primary); color: var(--primary); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+    /* ===============================
+       Results
+    =============================== */
+    .results {
+      margin: 1rem auto; padding: 1.5rem;
+      max-width: 1000px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
+    }
+    .results-grid {
+      display: grid; gap: 1.5rem; grid-template-columns: 1fr;
+    }
+    .image-preview {
+      position: relative; overflow: hidden; border-radius: var(--radius); background: var(--surface);
+      border: 1px solid var(--border);
+    }
+    .image-preview img {
+      width: 100%; height: 200px; object-fit: cover; display: block;
+    }
+    .image-overlay { position: absolute; top: .75rem; right: .75rem; }
+
+    .confidence-ring { position: relative; width: 88px; height: 88px; }
+    .confidence-circle { width: 100%; height: 100%; transform: rotate(-90deg); }
+    .confidence-bg { fill: none; stroke: var(--border); stroke-width: 8; }
+    .confidence-fill {
+      fill: none; stroke: var(--success); stroke-width: 8; stroke-linecap: round;
+      stroke-dasharray: 283; stroke-dashoffset: 283; transition: stroke-dashoffset 900ms ease;
+    }
+    .confidence-text {
+      position: absolute; inset: 0; display: grid; place-items: center; text-align: center; font-weight: 700;
+    }
+    .confidence-text span:first-child { font-size: 1.15rem; color: var(--success); }
+    .confidence-text span:last-child { font-size: .75rem; color: var(--text-secondary); }
+
+    .top-section {
+      display: grid; gap: 1.5rem; grid-template-columns: 200px 1fr;
+      align-items: start;
+    }
+    .cards-container {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .analysis {
+      display: grid; gap: var(--space-3);
+    }
+    .result-cards {
+      display: grid; gap: 0.75rem; grid-template-columns: repeat(2, 1fr);
+    }
+    .result-cards-row2 {
+      display: grid; gap: 0.75rem; grid-template-columns: repeat(3, 1fr);
+      margin-top: 0.75rem;
+      margin-left: 0;
+      width: 100%;
+    }
+    .result-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: .75rem;
+      padding: 1rem;
+      transition: transform .15s ease, box-shadow .15s ease;
+    }
+    .result-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+    .result-card.primary { border-left: 4px solid var(--primary); }
+    .result-card.accent { border-left: 4px solid var(--accent); }
+    .result-card.malignant { border-left: 4px solid var(--error); }
+    .result-card.success { border-left: 4px solid var(--success); }
+    .card-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; color: var(--text-secondary); text-transform: uppercase; font-size: .8rem; letter-spacing: .05em; }
+    .card-header i { color: var(--primary); }
+    .result-value { font-size: 1.35rem; font-weight: 700; color: var(--primary); display: block; }
+    .result-label { font-size: .875rem; color: var(--text-secondary); }
+
+    .recommendation {
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: #fff; border-radius: .75rem; padding: 1rem;
+    }
+    .recommendation h4 { margin: 0 0 .25rem; font-size: 0.9rem; }
+    .recommendation p { margin: 0; line-height: 1.5; font-size: 0.85rem; }
+
+    .ood-warning {
+      display: none;
+      background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+      color: #fff; border-radius: .75rem; padding: 1rem;
+      align-items: center; gap: 1rem;
+    }
+    .ood-warning.show { display: flex; }
+    .warning-content h4 { margin: 0 0 .25rem; font-size: 0.9rem; }
+    .warning-content p { margin: 0; line-height: 1.5; font-size: 0.85rem; }
+
+    .topk {
+      border: 1px solid var(--border); border-radius: .75rem; overflow: hidden; background: var(--surface);
+    }
+    .topk table { width: 100%; border-collapse: collapse; }
+    .topk th, .topk td { padding: .75rem 1rem; text-align: left; }
+    .topk thead th { font-size: .8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); }
+    .topk tbody tr + tr td { border-top: 1px solid var(--border); }
+    .bar {
+      height: .5rem; border-radius: .25rem; background: var(--border); overflow: hidden;
+    }
+    .bar > span { display: block; height: 100%; background: var(--primary); width: 0%; transition: width 900ms ease; }
+
+    /* Loading */
+    .loading {
+      position: absolute; inset: 0; background: color-mix(in oklab, var(--surface) 85%, transparent);
+      display: none; align-items: center; justify-content: center;
+    }
+    .loading.show { display: flex; }
+    .spinner {
+      width: 42px; height: 42px; border: 4px solid var(--border); border-top-color: var(--primary); border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Sections */
+    section + section { margin-top: 3rem; }
+    .section-card {
+      background: var(--surface-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem;
+    }
+
+    /* Footer */
+    footer {
+      margin-top: 3rem; padding: 2rem 0; border-top: 1px solid var(--border); color: var(--text-secondary);
+    }
+
+    /* Responsive */
+    @media (max-width: 1200px) {
+      .hero-grid { grid-template-columns: 1fr; gap: 2rem; }
+      .hero { padding: 1.5rem 0; }
+    }
+    
+    @media (max-width: 960px) {
+      .top-section { grid-template-columns: 1fr; }
+      nav[aria-label="Primary"] { gap: var(--space-4); }
+      .logo img.logo-svg { width: 150px; }
+      .result-cards { grid-template-columns: 1fr; }
+      .result-cards-row2 { 
+        grid-template-columns: 1fr; 
+        margin-left: 0;
+        width: 100%;
+      }
+      .hero-stats { gap: var(--space-4); }
+    }
+    
+    @media (max-width: 768px) {
+      .container { padding: 0 var(--space-4); }
+      .hero h1 { font-size: clamp(1.5rem, 4vw, 2.5rem); }
+      .hero-stats { flex-direction: column; gap: var(--space-2); }
+      .results { max-width: 100%; margin: 0.5rem; padding: 1rem; }
+    }
+    
+    /* 16:9 aspect ratio optimization */
+    @media (min-aspect-ratio: 16/9) {
+      .hero { padding: 1rem 0; }
+      .hero-grid { gap: 2rem; }
+      .hero h1 { font-size: clamp(1.8rem, 3vw, 2.8rem); }
+      .hero p.lead { font-size: 1rem; }
+    }
+
+    /* Reduced Motion */
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+  </style>
+
+  <!-- Structured Data (basic) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "MedicalWebPage",
+    "name": "DermaScan – AI Dermatology",
+    "description": "AI-assisted dermatology classification system.",
+    "audience": { "@type": "PeopleAudience", "healthCondition": "Skin lesions" }
+  }
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <div class="app">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="container header-content">
+        <div class="logo">
+          <img src="/static/logo.svg" alt="Your logo" class="logo-svg" />
+        </div>
+        <nav aria-label="Primary">
+          <a href="#about">About</a>
+          <a href="#how-it-works">How It Works</a>
+          <a href="#contact">Contact</a>
+        </nav>
+      </div>
+    </header>
+
+    <!-- Main -->
+    <main id="main">
+      <!-- Hero -->
+      <section class="hero">
+        <div class="container hero-grid">
+          <div>
+            <h1>AI-Powered Dermatological Analysis</h1>
+            <p class="lead">
+              Upload a skin lesion image to get AI-driven classification with confidence scores and clinical-style guidance.
+            </p>
+            <div class="hero-stats" aria-label="Performance highlights">
+              <div class="stat">
+                <span class="stat-number" id="accuracyStat">—</span>
+                <span class="stat-label">Model Accuracy</span>
+              </div>
+              <div class="stat">
+                <span class="stat-number">~2s</span>
+                <span class="stat-label">Typical Latency</span>
+              </div>
+              <div class="stat">
+                <span class="stat-number">24/7</span>
+                <span class="stat-label">Availability</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <form id="uploadForm" novalidate>
+              <label class="upload-area" for="imageInput" id="uploadArea" aria-describedby="uploadHelp">
+                <div class="upload-content" aria-hidden="true">
+                  <i class="fas fa-cloud-upload-alt"></i>
+                  <h3>Drag &amp; drop an image</h3>
+                  <p>or click to browse</p>
+                </div>
+              </label>
+              <input type="file" id="imageInput" accept="image/*" hidden aria-describedby="uploadHelp">
+              <p id="uploadHelp" class="helper-text">
+                Supported formats: JPG, PNG, GIF, BMP, TIFF. Max size: 16MB.
+              </p>
+              <div class="actions">
+                <button type="button" class="btn" id="selectBtn"><i class="fa-solid fa-file-image"></i> Select image</button>
+                <button type="button" class="btn secondary" id="resetBtn" aria-disabled="true"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+              </div>
+              <p id="errorBox" role="alert" class="helper-text" style="color: var(--error); display:none;"></p>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- Results -->
+      <section class="container results" id="resultsSection" aria-live="polite" aria-atomic="true" hidden>
+        <div class="results-grid">
+          <div class="top-section">
+            <div class="image-preview">
+              <div class="loading" id="loadingOverlay" aria-hidden="true">
+                <div class="spinner" role="status" aria-label="Analyzing"></div>
+              </div>
+
+              <img id="previewImage" alt="Uploaded skin lesion preview">
+            </div>
+
+            <div class="cards-container">
+              <div class="result-cards" role="group" aria-label="Primary classification summaries">
+                <div class="result-card primary">
+                  <div class="card-header"><i class="fas fa-stethoscope" aria-hidden="true"></i> <span>LESION TYPE</span></div>
+                  <div>
+                    <span class="result-value" id="coarseResult">—</span>
+                  </div>
+                </div>
+
+                <div class="result-card accent">
+                  <div class="card-header"><i class="fas fa-search" aria-hidden="true"></i> <span>Detailed Diagnosis</span></div>
+                  <div>
+                    <span class="result-value" id="fineResult">—</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="result-cards-row2" role="group" aria-label="Secondary classification summaries">
+                <div class="result-card" id="oodCard" style="display: none;">
+                  <div class="card-header"><i class="fas fa-shield-alt" aria-hidden="true"></i> <span>Known/Unknown Case</span></div>
+                  <div>
+                    <span class="result-value" id="oodResult">—</span>
+                  </div>
+                </div>
+
+                <div class="result-card" id="reliabilityCard" style="display: none;">
+                  <div class="card-header"><i class="fas fa-check-circle" aria-hidden="true"></i> <span>Reliability</span></div>
+                  <div>
+                    <span class="result-value" id="reliabilityResult">—</span>
+                  </div>
+                </div>
+
+                <div class="result-card" id="confidenceCard" style="display: none;">
+                  <div class="card-header"><i class="fas fa-percentage" aria-hidden="true"></i> <span>CONFIDENCE</span></div>
+                  <div>
+                    <span class="result-value" id="confidenceResult">—</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="topk" aria-labelledby="topk-title">
+              <div style="padding: 1rem 1rem 0; font-weight:600;" id="topk-title">Top predictions</div>
+              <table aria-describedby="topk-note">
+                <thead>
+                  <tr><th scope="col">Class</th><th scope="col" style="width:45%">Probability</th><th scope="col" style="text-align:right;">%</th></tr>
+                </thead>
+                <tbody id="topkBody">
+                  <!-- populated by JS -->
+                </tbody>
+              </table>
+              <p id="topk-note" class="helper-text" style="padding: .5rem 1rem 1rem;">
+                Probabilities from the AI model.
+              </p>
+            </div>
+
+            <div class="recommendation" id="recCard">
+              <h4><i class="fas fa-lightbulb" aria-hidden="true"></i> Clinical recommendation</h4>
+              <p id="recText">—</p>
+            </div>
+
+            <div class="ood-warning" id="oodWarning" role="alert">
+              <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+              <div class="warning-content">
+                <h4>Out-of-Distribution Case Detected</h4>
+                <p>This image appears atypical for the trained classes. The ResNet OOD detector has flagged this as potentially outside the model's training distribution. Consider expert consultation for accurate diagnosis.</p>
+                <p><strong>OOD Score:</strong> <span id="oodScore">—</span> | <strong>Threshold:</strong> <span id="oodThreshold">—</span></p>
+              </div>
+            </div>
+
+            <p class="helper-text" style="margin:0;">
+              This is a prototype, don't take anything that it reports as medical advice.
+            </p>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+
+  <script>
+    // ------- Utilities -------
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+    // ------- Elements -------
+    const uploadArea   = $('#uploadArea');
+    const imageInput   = $('#imageInput');
+    const selectBtn    = $('#selectBtn');
+    const resetBtn     = $('#resetBtn');
+    const errorBox     = $('#errorBox');
+
+    const resultsSection   = $('#resultsSection');
+    const previewImage     = $('#previewImage');
+    const loadingOverlay   = $('#loadingOverlay');
+
+    const topkBody     = $('#topkBody');
+    const coarseResult = $('#coarseResult');
+    const fineResult   = $('#fineResult');
+    const recText      = $('#recText');
+    const oodWarning   = $('#oodWarning');
+    const accuracyStat = $('#accuracyStat');
+    
+    // New elements for OOD detection
+    const oodCard = $('#oodCard');
+    const oodResult = $('#oodResult');
+    const oodScore = $('#oodScore');
+    const oodThreshold = $('#oodThreshold');
+    const reliabilityCard = $('#reliabilityCard');
+    const reliabilityResult = $('#reliabilityResult');
+    
+    // Confidence card elements
+    const confidenceCard = $('#confidenceCard');
+    const confidenceResult = $('#confidenceResult');
+
+    // ------- Config -------
+    const MAX_MB = 16;
+    const ACCEPTED = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/tiff'];
+    
+    // Disease name mapping
+    const DISEASE_NAMES = {
+      'nv': 'Melanocytic Nevus',
+      'mel': 'Melanoma',
+      'bkl': 'Benign Keratosis-like Lesion',
+      'bcc': 'Basal Cell Carcinoma',
+      'scc_akiec': 'Squamous Cell Carcinoma',
+      'vasc': 'Vascular Lesion',
+      'df': 'Dermatofibroma',
+      'other': 'Other',
+      'no_lesion': 'No Lesion'
+    };
+
+    // ------- Helpers -------
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.style.display = 'block';
+    }
+    function clearError() {
+      errorBox.textContent = '';
+      errorBox.style.display = 'none';
+    }
+    function bytesToMB(b) { return (b / (1024 * 1024)); }
+
+    function setLoading(isLoading) {
+      loadingOverlay.classList.toggle('show', isLoading);
+      loadingOverlay.setAttribute('aria-hidden', String(!isLoading));
+    }
+
+
+    function animateTopK(predictions) {
+      topkBody.innerHTML = '';
+      predictions.forEach((pred) => {
+        const pct = Math.round(pred.percentage);
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${pred.class}</td>
+          <td><div class="bar"><span style="width:0%"></span></div></td>
+          <td style="text-align:right;">${pct}%</td>
+        `;
+        topkBody.appendChild(tr);
+        // animate width after insertion
+        requestAnimationFrame(() => {
+          const span = tr.querySelector('.bar > span');
+          span.style.width = pct + '%';
+        });
+      });
+    }
+
+    function renderResults(data) {
+      // Update confidence - use overall confidence from hybrid model
+      const confidence = Math.round(data.reliability.overall_confidence * 100);
+      
+      // Update confidence card
+      confidenceCard.style.display = 'block';
+      confidenceResult.textContent = confidence + '%';
+
+      // Update classifications
+      const lesionType = data.coarse_classification.class.charAt(0).toUpperCase() + data.coarse_classification.class.slice(1);
+      coarseResult.textContent = lesionType;
+      fineResult.textContent = DISEASE_NAMES[data.fine_classification.class] || data.fine_classification.class;
+
+      // Update lesion type card styling based on classification
+      const lesionCard = document.querySelector('.result-card.primary');
+      lesionCard.classList.remove('malignant');
+      if (data.coarse_classification.class === 'malignant') {
+        lesionCard.classList.add('malignant');
+      }
+
+      // Update detailed diagnosis card styling
+      const detailedCard = document.querySelector('.result-card.accent');
+      detailedCard.classList.remove('success');
+      if (data.fine_classification.class === '--') {
+        detailedCard.classList.add('success');
+        fineResult.style.color = 'var(--success)';
+      } else {
+        fineResult.style.color = 'var(--primary)';
+      }
+
+      // Update OOD detection card
+      oodCard.style.display = 'block';
+      oodResult.textContent = data.ood_detection.is_out_of_distribution ? 'Unknown Case' : 'Known Case';
+      oodScore.textContent = (data.ood_detection.ood_score * 100).toFixed(1) + '%';
+      oodThreshold.textContent = (data.ood_detection.threshold * 100).toFixed(1) + '%';
+
+      // Update reliability card
+      reliabilityCard.style.display = 'block';
+      reliabilityResult.textContent = data.reliability.is_reliable ? 'Reliable' : 'Unreliable';
+      
+      // Update top predictions - use fine classification probabilities
+      const fineProbs = Object.entries(data.fine_classification.probabilities)
+        .map(([className, prob]) => ({
+          class: DISEASE_NAMES[className] || className,
+          percentage: prob * 100
+        }))
+        .sort((a, b) => b.percentage - a.percentage)
+        .slice(0, 5); // Top 5
+      
+      animateTopK(fineProbs);
+
+      // Update recommendation based on classification and reliability
+      let recommendation = '';
+      if (data.reliability.is_reliable) {
+        if (data.coarse_classification.class === 'malignant') {
+          recommendation = 'This lesion shows characteristics consistent with malignancy. Immediate consultation with a dermatologist is strongly recommended for biopsy and further evaluation.';
+        } else if (data.coarse_classification.class === 'benign') {
+          recommendation = 'This lesion appears benign based on visual characteristics. Regular monitoring and routine dermatological check-ups are recommended.';
+        } else {
+          recommendation = 'The image does not clearly show a skin lesion. Please ensure the image contains a visible skin lesion for accurate analysis.';
+        }
+      } else {
+        recommendation = 'The analysis shows low confidence or detected atypical features. Professional dermatological evaluation is recommended for accurate diagnosis.';
+      }
+      recText.textContent = recommendation;
+
+      // Show OOD warning if needed
+      oodWarning.classList.toggle('show', data.ood_detection.is_out_of_distribution);
+
+      // Focus results for screen readers
+      resultsSection.focus({ preventScroll: false });
+    }
+
+    function resetUI() {
+      resultsSection.hidden = true;
+      previewImage.removeAttribute('src');
+      previewImage.removeAttribute('alt');
+      topkBody.innerHTML = '';
+      coarseResult.textContent = '—';
+      fineResult.textContent = '—';
+      recText.textContent = '—';
+      oodWarning.classList.remove('show');
+      
+      // Reset OOD and reliability cards
+      oodCard.style.display = 'none';
+      oodResult.textContent = '—';
+      oodScore.textContent = '—';
+      oodThreshold.textContent = '—';
+      
+      reliabilityCard.style.display = 'none';
+      reliabilityResult.textContent = '—';
+      
+      // Reset confidence card
+      confidenceCard.style.display = 'none';
+      confidenceResult.textContent = '—';
+      
+      clearError();
+      imageInput.value = '';
+      resetBtn.setAttribute('aria-disabled', 'true');
+    }
+
+    // ------- API Functions -------
+    async function uploadAndPredict(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const response = await fetch('/api/predict', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Upload failed');
+        }
+
+        const result = await response.json();
+        return result;
+      } catch (error) {
+        console.error('Upload error:', error);
+        throw error;
+      }
+    }
+
+    async function loadModelInfo() {
+      try {
+        const response = await fetch('/api/model_info');
+        if (response.ok) {
+          const info = await response.json();
+          // You could display model info here if needed
+          console.log('Model info:', info);
+        }
+      } catch (error) {
+        console.error('Error loading model info:', error);
+      }
+    }
+
+    // ------- Event Handlers -------
+    function handleFiles(files) {
+      if (!files || !files.length) return;
+      const file = files[0];
+
+      // Validation
+      if (!ACCEPTED.includes(file.type)) {
+        showError('Unsupported file type. Please upload a JPG, PNG, GIF, BMP, or TIFF image.');
+        return;
+      }
+      if (bytesToMB(file.size) > MAX_MB) {
+        showError(`File too large. Max ${MAX_MB}MB.`);
+        return;
+      }
+      clearError();
+
+      // Preview
+      const url = URL.createObjectURL(file);
+      previewImage.src = url;
+      previewImage.alt = `Preview of uploaded image: ${file.name}`;
+
+      // Show results and start analysis
+      resultsSection.hidden = false;
+      setLoading(true);
+      resetBtn.setAttribute('aria-disabled', 'false');
+
+      // Upload and predict
+      uploadAndPredict(file)
+        .then(result => {
+          setLoading(false);
+          renderResults(result);
+          // Cleanup object URL after image loads
+          previewImage.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+        })
+        .catch(error => {
+          setLoading(false);
+          showError(`Analysis failed: ${error.message}`);
+        });
+    }
+
+    // Click-to-select
+    selectBtn.addEventListener('click', () => imageInput.click());
+
+    // Reset
+    resetBtn.addEventListener('click', () => {
+      if (resetBtn.getAttribute('aria-disabled') === 'true') return;
+      resetUI();
+      uploadArea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    // Input change
+    imageInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+    // Drag & drop
+    ['dragenter', 'dragover'].forEach(evt =>
+      uploadArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); uploadArea.classList.add('dragover'); })
+    );
+    ['dragleave', 'drop'].forEach(evt =>
+      uploadArea.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); uploadArea.classList.remove('dragover'); })
+    );
+    uploadArea.addEventListener('drop', (e) => {
+      const dt = e.dataTransfer;
+      if (dt && dt.files) handleFiles(dt.files);
+    });
+
+    // Also allow clicking the label background to open picker
+    uploadArea.addEventListener('click', () => imageInput.click());
+
+    // Accessibility: ensure results section can receive focus
+    resultsSection.setAttribute('tabindex', '-1');
+
+    // Load model info on page load
+    window.addEventListener('load', () => {
+      loadModelInfo();
+    });
+  </script>
+</body>
+</html>

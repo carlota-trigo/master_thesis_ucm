@@ -229,7 +229,16 @@ def resolve_image_path(path):
                 print(f"Warning: Could not find image file: {filename}")
                 return linux_path
     
-    # For relative paths, construct the full path
+    # Check if it's already a relative path that starts with ../data/images/images/
+    elif p.startswith('../data/images/images/'):
+        # This is our new relative path format - use it as is
+        if os.path.exists(p):
+            return p
+        else:
+            print(f"Warning: Could not find image file: {p}")
+            return p
+    
+    # For other relative paths (just filename), construct the full path
     return str(IMAGE_PATH / p)
 
 def apply_fine_oversampling(df, fine_oversampling):

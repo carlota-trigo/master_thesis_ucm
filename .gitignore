@@ -210,7 +210,6 @@ __marimo__/
 outputs/
 logs/
 models/
-deployment/
 *.keras
 *.h5
 *.pkl
