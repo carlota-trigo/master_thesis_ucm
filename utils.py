@@ -100,11 +100,22 @@ def calculate_class_weights(class_counts):
 
 def counts_from_labels(series, n_classes, valid_range=(0, None)):
     """Extract class counts from label series."""
-    y = pd.to_numeric(series, errors="coerce").astype("float")
+    # Handle both pandas Series and numpy arrays
+    if isinstance(series, np.ndarray):
+        y = series.astype("float")
+    else:
+        y = pd.to_numeric(series, errors="coerce").astype("float")
+    
     lo = valid_range[0]
     hi = valid_range[1] if valid_range[1] is not None else np.inf
     y = y[(y >= lo) & (y < (hi if hi != np.inf else np.inf))]
-    y = y.dropna().astype(int).values
+    
+    # Handle NaN values appropriately for both pandas and numpy
+    if isinstance(y, np.ndarray):
+        y = y[~np.isnan(y)].astype(int)
+    else:
+        y = y.dropna().astype(int).values
+    
     counts = np.bincount(y, minlength=n_classes)
     return counts
 
@@ -463,8 +474,8 @@ def load_ensemble_models(individual_dir):
     for backbone_type in backbone_types:
         # Try both naming conventions used by ensemble_model.py
         model_paths = [
-            individual_dir / f"{backbone_type}_model.keras",  # ensemble_model.py saves as this
-            individual_dir / f"{backbone_type}_best_model.keras"  # alternative naming
+            individual_dir / f"{backbone_type}" / f"{backbone_type}_best_model.keras",  # ensemble_model.py saves as this
+            # individual_dir / f"{backbone_type}_best_model.keras"  # alternative naming
         ]
         
         model = None
@@ -509,7 +520,7 @@ def create_voting_ensemble(models_dict, dataset):
     all_coarse_preds = []
     
     for backbone_type, model in models_dict.items():
-        print(f"Getting predictions from {backbone_type}...")
+        # print(f"Getting predictions from {backbone_type}...")
         preds = model.predict(dataset, verbose=0)
         all_coarse_preds.append(preds[0])
         all_fine_preds.append(preds[1])
@@ -518,37 +529,83 @@ def create_voting_ensemble(models_dict, dataset):
     ensemble_fine_preds = np.mean(all_fine_preds, axis=0)
     ensemble_coarse_preds = np.mean(all_coarse_preds, axis=0)
     
-    return ensemble_fine_preds, ensemble_coarse_preds
+    # CORRECTED: Return in correct order [coarse, fine] to match individual models
+    return ensemble_coarse_preds, ensemble_fine_preds
 
-def create_weighted_ensemble(models_dict, dataset, weights=None):
+def calculate_model_weights(models_dict, val_dataset):
+    """Calculate performance-based weights for ensemble models."""
+    weights = {}
+    
+    for backbone_type, model in models_dict.items():
+        # Get predictions on validation set
+        labels_h1, logits_h1, labels_h2, logits_h2 = get_predictions_and_labels(model, val_dataset)
+        
+        # Calculate performance metrics
+        preds_h1 = np.argmax(logits_h1, axis=1)
+        preds_h2 = np.argmax(logits_h2, axis=1)
+        
+        # Use balanced accuracy as the primary metric for weighting
+        from sklearn.metrics import balanced_accuracy_score
+        
+        # Calculate balanced accuracy for both heads
+        valid_mask_h1 = labels_h1 >= 0
+        valid_mask_h2 = labels_h2 >= 0
+        
+        if valid_mask_h1.sum() > 0:
+            coarse_acc = balanced_accuracy_score(labels_h1[valid_mask_h1], preds_h1[valid_mask_h1])
+        else:
+            coarse_acc = 0.0
+            
+        if valid_mask_h2.sum() > 0:
+            fine_acc = balanced_accuracy_score(labels_h2[valid_mask_h2], preds_h2[valid_mask_h2])
+        else:
+            fine_acc = 0.0
+        
+        # Combined performance score (weighted average of both heads)
+        combined_score = 0.6 * coarse_acc + 0.4 * fine_acc
+        weights[backbone_type] = max(combined_score, 0.1)  # Minimum weight to avoid zero
+    
+    # Normalize weights to sum to 1
+    total_weight = sum(weights.values())
+    weights = {k: v / total_weight for k, v in weights.items()}
+    
+    return weights
+
+def create_weighted_ensemble(models_dict, dataset, weights=None, val_dataset=None):
     """Create weighted ensemble from multiple models."""
     if weights is None:
-        weights = [1.0] * len(models_dict)
-    
-    weights = np.array(weights)
-    weights = weights / weights.sum()
+        if val_dataset is not None:
+            # Calculate performance-based weights
+            weights = calculate_model_weights(models_dict, val_dataset)
+            print(f"Calculated performance-based weights: {weights}")
+        else:
+            # Fallback to equal weights
+            weights = {k: 1.0/len(models_dict) for k in models_dict.keys()}
+            print(f"Using equal weights: {weights}")
     
     all_fine_preds = []
     all_coarse_preds = []
     
-    for i, (backbone_type, model) in enumerate(models_dict.items()):
-        print(f"Getting predictions from {backbone_type} (weight: {weights[i]:.3f})...")
+    for backbone_type, model in models_dict.items():
+        weight = weights[backbone_type]
+        print(f"Getting predictions from {backbone_type} (weight: {weight:.3f})...")
         preds = model.predict(dataset, verbose=0)
-        all_coarse_preds.append(preds[0] * weights[i])
-        all_fine_preds.append(preds[1] * weights[i])
+        all_coarse_preds.append(preds[0] * weight)
+        all_fine_preds.append(preds[1] * weight)
     
     # Weighted average predictions
     ensemble_fine_preds = np.sum(all_fine_preds, axis=0)
     ensemble_coarse_preds = np.sum(all_coarse_preds, axis=0)
     
-    return ensemble_fine_preds, ensemble_coarse_preds
+    # CORRECTED: Return in correct order [coarse, fine] to match individual models
+    return ensemble_coarse_preds, ensemble_fine_preds
 
-def get_ensemble_predictions(ensemble_models, dataset, method='voting'):
+def get_ensemble_predictions(ensemble_models, dataset, method='voting', val_dataset=None):
     """Get ensemble predictions."""
     if method == 'voting':
-        fine_preds, coarse_preds = create_voting_ensemble(ensemble_models, dataset)
+        coarse_preds, fine_preds = create_voting_ensemble(ensemble_models, dataset)
     elif method == 'weighted':
-        fine_preds, coarse_preds = create_weighted_ensemble(ensemble_models, dataset)
+        coarse_preds, fine_preds = create_weighted_ensemble(ensemble_models, dataset, val_dataset=val_dataset)
     else:
         raise ValueError("Method must be 'voting' or 'weighted'")
     
@@ -556,7 +613,8 @@ def get_ensemble_predictions(ensemble_models, dataset, method='voting'):
     first_model = list(ensemble_models.values())[0]
     labels_h1, _, labels_h2, _ = get_predictions_and_labels(first_model, dataset)
     
-    return labels_h1, fine_preds, labels_h2, coarse_preds
+    # CORRECTED: Return in correct order [coarse, fine] to match individual models
+    return labels_h1, coarse_preds, labels_h2, fine_preds
 
 # =============================================================================
 # EVALUATION UTILITIES
@@ -734,19 +792,19 @@ def plot_model_comparison(comparison_df, all_metrics, models_config):
 
 def plot_ood_detection(all_predictions, models_config):
     """Plot OOD detection analysis."""
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(10,8))
 
     # Plot MSP distributions for each model
     for i, (model_key, predictions) in enumerate(all_predictions.items()):
         model_name = models_config[model_key]['name']
-        color = models_config[model_key]['color']
         
         id_msp_scores = get_msp_scores(predictions['id_logits_h1'])
         ood_msp_scores = get_msp_scores(predictions['ood_logits_h1'])
         
-        plt.subplot(2, 2, i+1)
-        plt.hist(id_msp_scores, bins=30, alpha=0.7, label='ID', color='blue', density=True)
-        plt.hist(ood_msp_scores, bins=30, alpha=0.7, label='OOD', color='red', density=True)
+        plt.subplot(3, 2, i+1)
+        # Use consistent viridis colors: ID = green-blue, OOD = dark purple
+        plt.hist(id_msp_scores, bins=30, alpha=0.7, label='ID', color='#35b779', density=True)
+        plt.hist(ood_msp_scores, bins=30, alpha=0.7, label='OOD', color='#440154', density=True)
         plt.title(f'{model_name}')
         plt.xlabel('Maximum Softmax Probability')
         plt.ylabel('Density')

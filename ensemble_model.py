@@ -3,6 +3,10 @@
 """
 Ensemble Learning with Architectural Diversity
 Implements multiple backbone architectures with ensemble methods
+
+Usage:
+    python ensemble_model.py                    # Train individual models from scratch
+    python ensemble_model.py --load-existing   # Load existing individual models
 """
 
 import os
@@ -10,6 +14,7 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN warnings
 # GPU memory optimization
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
+import argparse
 import utils
 from pathlib import Path
 import json, time
@@ -331,8 +336,19 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
     else:
         coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
     
+    # Add cosine decay learning rate schedule for meta-model
+    import math
+    meta_steps_per_epoch = max(1, math.ceil(len(stacked_coarse_train_valid) / BATCH_SIZE))
+    meta_total_steps = max(1, 50 * meta_steps_per_epoch)  # 50 epochs for meta-model
+    
+    meta_lr_schedule = keras.optimizers.schedules.CosineDecay(
+        initial_learning_rate=LR/5,
+        decay_steps=meta_total_steps,
+        alpha=0.01
+    )
+    
     meta_model.compile(
-        optimizer=keras.optimizers.AdamW(learning_rate=LR/10, weight_decay=WEIGHT_DECAY),
+        optimizer=keras.optimizers.AdamW(learning_rate=meta_lr_schedule, weight_decay=WEIGHT_DECAY),
         loss={
             "coarse_output": coarse_loss,
             "fine_output": keras.losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -357,7 +373,7 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
         ),
         keras.callbacks.EarlyStopping(
             monitor="val_loss",
-            patience=5,
+            patience=15,  # Increased patience for meta-model convergence
             restore_best_weights=True,
             verbose=1,
         ),
@@ -365,7 +381,7 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
             monitor="val_loss",
             factor=0.5,
             patience=3,
-            min_lr=1e-7,
+            min_lr=1e-8,
             verbose=1,
         ),
     ]
@@ -376,7 +392,7 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
         [coarse_true_train_valid, fine_true_train_valid],
         validation_data=([stacked_coarse_val_valid, stacked_fine_val_valid], 
                         [coarse_true_val_valid, fine_true_val_valid]),
-        epochs=15,  # Fewer epochs for meta-model
+        epochs=75,  # Increased epochs for better meta-model convergence
         callbacks=callbacks,
         verbose=1,
     )
@@ -390,6 +406,78 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
 
 # Removed evaluate_ensemble function - evaluation will be done in separate script
 
+# -------------------- Model Loading Functions --------------------
+
+def load_existing_models(train_df):
+    """Load all existing individual models."""
+    models = {}
+    
+    # Calculate focal alpha like in base model (needed for recompilation)
+    coarse_counts = utils.counts_from_labels(train_df["head1_idx"], N_LESION_TYPE_CLASSES, (0, N_LESION_TYPE_CLASSES))
+    coarse_alpha = utils.calculate_focal_alpha(coarse_counts)
+    
+    for backbone_type in MODEL_CONFIGS.keys():
+        model_dir = INDIVIDUAL_OUTDIR / backbone_type
+        model_path = model_dir / f"{backbone_type}_best_model.keras"
+        
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model not found: {model_path}")
+        
+        print(f"Loading {MODEL_CONFIGS[backbone_type]['name']} from {model_path}")
+        
+        # Load model with custom objects for loss functions (matching base model approach)
+        custom_objects = {
+            'masked_sparse_ce_with_oe': utils.masked_sparse_ce_with_oe,
+            'sparse_categorical_focal_loss': utils.sparse_categorical_focal_loss
+        }
+        
+        try:
+            model = keras.models.load_model(model_path, custom_objects=custom_objects)
+            models[backbone_type] = model
+            print(f"✓ {MODEL_CONFIGS[backbone_type]['name']} loaded successfully")
+        except Exception as e:
+            print(f"⚠️  Failed to load {backbone_type} with custom objects: {e}")
+            print("Trying to load without custom objects...")
+            try:
+                # Try loading without custom objects (for inference only)
+                model = keras.models.load_model(model_path, compile=False)
+                # Recompile with custom objects for training (matching individual model training approach)
+                if USE_FOCAL_COARSE:
+                    coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
+                else:
+                    coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+                
+                # Use the same optimizer setup as individual model training
+                import math
+                steps_per_epoch = max(1, math.ceil(len(train_df) / BATCH_SIZE))
+                total_steps = max(1, EPOCHS * steps_per_epoch)
+                
+                lr_schedule = keras.optimizers.schedules.CosineDecay(
+                    initial_learning_rate=MODEL_CONFIGS[backbone_type]['learning_rate'],
+                    decay_steps=total_steps,
+                    alpha=0.01
+                )
+                
+                optimizer = keras.optimizers.AdamW(learning_rate=lr_schedule, weight_decay=WEIGHT_DECAY)
+                
+                model.compile(
+                    optimizer=optimizer,
+                    loss={
+                        "coarse_output": coarse_loss,
+                        "fine_output": utils.masked_sparse_ce_with_oe,
+                    },
+                    metrics={
+                        "coarse_output": ["sparse_categorical_accuracy"],
+                        "fine_output": ["sparse_categorical_accuracy"],
+                    },
+                )
+                models[backbone_type] = model
+                print(f"✓ {MODEL_CONFIGS[backbone_type]['name']} loaded and recompiled successfully")
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load {backbone_type} model: {e2}")
+    
+    return models
+
 # -------------------- Main Functions --------------------
 
 # Removed create_and_evaluate_ensembles function - evaluation will be done in separate script
@@ -397,10 +485,18 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
 def main():
     """
     Main function to run ensemble training.
-    Trains 3 individual models (EfficientNet, ResNet, DenseNet) and creates a stacking ensemble.
-    All models are saved for later evaluation in a separate script.
+    Can either train individual models from scratch or load existing ones.
     """
-    print("Starting Ensemble Learning Pipeline...")
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Ensemble Learning Pipeline')
+    parser.add_argument('--load-existing', action='store_true',
+                       help='Load existing individual models instead of training from scratch')
+    args = parser.parse_args()
+    
+    if args.load_existing:
+        print("Starting Ensemble Learning Pipeline (Loading Existing Models)...")
+    else:
+        print("Starting Ensemble Learning Pipeline (Training from Scratch)...")
     
     # Create output directories
     ENSEMBLE_OUTDIR.mkdir(exist_ok=True, parents=True)
@@ -430,39 +526,64 @@ def main():
         print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
         print("Note: Test set will be used later for unbiased evaluation")
 
-    # Train individual models
+    # Load or train individual models
     models = {}
     
-    for backbone_type in MODEL_CONFIGS.keys():
-        model_dir = INDIVIDUAL_OUTDIR / backbone_type
+    if args.load_existing:
+        # Load existing individual models
+        print("\nLoading existing individual models...")
+        try:
+            models = load_existing_models(train_df)
+            print(f"\nLoaded {len(models)} individual models:")
+            for backbone_type, model in models.items():
+                print(f"- {MODEL_CONFIGS[backbone_type]['name']}")
+        except FileNotFoundError as e:
+            print(f"\n❌ Error: {e}")
+            print("Please train individual models first by running:")
+            print("python ensemble_model.py")
+            return
+    else:
+        # Train individual models from scratch
+        print("\nTraining individual models from scratch...")
         
-        # Check if EfficientNet model already exists (from base model training)
-        if backbone_type == 'efficientnet':
-            base_model_path = Path("outputs/base_model/simple_twohead_best_model.keras")
-            if base_model_path.exists():
-                print(f"\nLoading existing EfficientNetB1 model from {base_model_path}")
-                try:
-                    # Load model with custom objects for loss functions
-                    custom_objects = {
-                        'masked_sparse_ce_with_oe': utils.masked_sparse_ce_with_oe,
-                        'sparse_categorical_focal_loss': utils.sparse_categorical_focal_loss
-                    }
-                    model = keras.models.load_model(base_model_path, custom_objects=custom_objects)
-                    # Copy to ensemble directory for consistency
-                    model_dir.mkdir(exist_ok=True, parents=True)
-                    model.save(str(model_dir / "efficientnet_best_model.keras"))
-                    print(f"✓ EfficientNetB1 model loaded and saved to {model_dir}")
-                    models[backbone_type] = model
-                    continue
-                except Exception as e:
-                    print(f"⚠️  Failed to load existing model: {e}")
-                    print("Falling back to training from scratch...")
+        for backbone_type in MODEL_CONFIGS.keys():
+            model_dir = INDIVIDUAL_OUTDIR / backbone_type
+            
+            # Check if EfficientNet model already exists (from base model training)
+            if backbone_type == 'efficientnet':
+                base_model_path = Path("outputs/base_model/simple_twohead_best_model.keras")
+                if base_model_path.exists():
+                    print(f"\nLoading existing EfficientNetB1 model from {base_model_path}")
+                    try:
+                        # Load model with custom objects for loss functions
+                        custom_objects = {
+                            'masked_sparse_ce_with_oe': utils.masked_sparse_ce_with_oe,
+                            'sparse_categorical_focal_loss': utils.sparse_categorical_focal_loss
+                        }
+                        model = keras.models.load_model(base_model_path, custom_objects=custom_objects)
+                        # Copy to ensemble directory for consistency
+                        model_dir.mkdir(exist_ok=True, parents=True)
+                        model.save(str(model_dir / "efficientnet_best_model.keras"))
+                        print(f"✓ EfficientNetB1 model loaded and saved to {model_dir}")
+                        models[backbone_type] = model
+                        continue
+                    except Exception as e:
+                        print(f"⚠️  Failed to load existing model: {e}")
+                        print("Falling back to training from scratch...")
+            
+            # Train other models or EfficientNet if loading failed
+            model = train_individual_model(backbone_type, train_df, val_df, model_dir)
+            models[backbone_type] = model
         
-        # Train other models or EfficientNet if loading failed
-        model = train_individual_model(backbone_type, train_df, val_df, model_dir)
-        models[backbone_type] = model
+        print(f"\nTrained {len(models)} individual models:")
+        for backbone_type, model in models.items():
+            print(f"- {MODEL_CONFIGS[backbone_type]['name']}")
         
     # Create and train stacking ensemble
+    print("\n" + "="*40)
+    print("CREATING STACKING ENSEMBLE")
+    print("="*40)
+    
     meta_model, stacked_coarse, stacked_fine = create_stacking_ensemble(models, train_df, val_df)
     _, stacking_dir = train_stacking_ensemble(meta_model, stacked_coarse, stacked_fine, train_df, val_df, models)
     
@@ -472,7 +593,7 @@ def main():
     print(f"Individual models saved to: {INDIVIDUAL_OUTDIR}")
     print(f"Stacking ensemble saved to: {stacking_dir}")
     print("Note: Test set will be used later for unbiased evaluation")
-    print("\nModels trained:")
+    print("\nModels used:")
     for backbone_type in MODEL_CONFIGS.keys():
         print(f"- {MODEL_CONFIGS[backbone_type]['name']}")
     print("\nEnsemble method:")
