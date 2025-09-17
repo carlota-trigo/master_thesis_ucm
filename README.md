@@ -1,7 +1,6 @@
-# Skin Lesion Classification with Self-Supervised Learning
-
-<div align="center">
-  <img src="deployment/static/logo.svg" alt="Skin Lesion Classification API Logo" width="200"/>
+<div align="center" style="background-color: #00674f; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+  <h1 style="color: white; margin: 0; font-size: 2.5em;">Skin Lesion Classification with Self-Supervised Learning</h1>
+  <img src="deployment/static/logo.svg" alt="Skin Lesion Classification API Logo" width="200" style="margin-top: 15px;"/>
 </div>
 
 ## Overview
@@ -57,8 +56,9 @@ master_thesis_ucm/                    # Project root directory
 └── README.md                        # This file
 ```
 
-The database is published in Kaggle
 ---
+
+The database is published on [Kaggle](https://kaggle.com/datasets/bfe201b6a7fcf5f0496c7752ff119fc2d3223ae66c0d4ac48a9a009ad84ebe7a)
 
 <div align="center">
   <p><em>Built with ❤️ for advancing medical AI</em></p>
