@@ -178,17 +178,26 @@ def augment_minority(img):
     return img
 
 def resolve_image_path(path):
-    """Resolve image path to absolute path."""
+    """
+    Resolve image path to absolute path, handling cross-platform compatibility.
+    
+    This function handles various path formats:
+    - Windows absolute paths (C:\path\to\file.jpg)
+    - Unix absolute paths (/path/to/file.jpg)  
+    - Relative paths (../data/images/images/file.jpg)
+    - Filename only (file.jpg)
+    """
     p = str(path)
     
     # Check if it's a Windows path (contains drive letter like C:)
     if ':' in p and ('\\' in p or p.startswith('C:') or p.startswith('D:')):
-        # Windows path - extract just the filename
+        # Windows path - extract just the filename for cross-platform compatibility
         if '\\' in p:
             filename = p.split('\\')[-1]
         else:
             filename = p.split('/')[-1]  # fallback for forward slashes
         
+        # Construct path using the standard image directory
         linux_path = str(IMAGE_PATH / filename)
         if os.path.exists(linux_path):
             return linux_path
@@ -201,6 +210,7 @@ def resolve_image_path(path):
         if os.path.exists(p):
             return p
         else:
+            # Try to find the file in the standard image directory
             filename = os.path.basename(p)
             linux_path = str(IMAGE_PATH / filename)
             if os.path.exists(linux_path):
@@ -211,7 +221,7 @@ def resolve_image_path(path):
     
     # Check if it's already a relative path that starts with ../data/images/images/
     elif p.startswith('../data/images/images/'):
-        # This is our new relative path format - use it as is
+        # This is our standardized relative path format - use it as is
         if os.path.exists(p):
             return p
         else:
@@ -381,21 +391,33 @@ def masked_sparse_categorical_crossentropy(y_true, y_pred):
 
 @tf.keras.utils.register_keras_serializable()
 def masked_sparse_ce_with_oe(y_true, y_pred):
-    """Masked sparse categorical crossentropy with outlier exposure."""
+    """
+    Masked sparse categorical crossentropy with outlier exposure.
+    
+    This loss function handles three types of labels:
+    - Valid labels (>= 0): Use standard cross-entropy loss
+    - Masked labels (-1): Ignore in loss calculation  
+    - OOD labels (-2): Use outlier exposure loss to encourage uniform predictions
+    """
     y_true = tf.cast(y_true, tf.int32)
     num_classes = tf.shape(y_pred)[-1]
 
-    mask_valid = tf.logical_and(y_true >= 0, y_true < num_classes)
-    mask_ood = tf.equal(y_true, -2)
+    # Create masks for different label types
+    mask_valid = tf.logical_and(y_true >= 0, y_true < num_classes)  # Normal samples
+    mask_ood = tf.equal(y_true, -2)  # Out-of-distribution samples
 
+    # Calculate standard cross-entropy for valid samples
     y_true_safe = tf.where(mask_valid, y_true, tf.zeros_like(y_true))
     ce = tf.keras.losses.sparse_categorical_crossentropy(y_true_safe, y_pred, from_logits=True)
 
+    # Calculate outlier exposure loss (encourages uniform distribution)
     log_p = tf.nn.log_softmax(y_pred, axis=-1)
     oe = LAMBDA_OE * (-tf.reduce_mean(log_p, axis=-1))
 
+    # Apply appropriate loss based on label type
     per_example = tf.where(mask_ood, oe, tf.where(mask_valid, ce, tf.zeros_like(ce)))
 
+    # Calculate average loss over valid and OOD samples only
     denom = tf.reduce_sum(tf.cast(tf.logical_or(mask_valid, mask_ood), per_example.dtype))
     return tf.math.divide_no_nan(tf.reduce_sum(per_example), denom)
 

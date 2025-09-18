@@ -103,25 +103,32 @@ def train_individual_model(backbone_type, train_df, val_df, model_dir):
     minority_fine_names = ["df", "vasc", "other", "no_lesion"]
     minority_fine_ids = {DX_TO_ID[n] for n in minority_fine_names if n in DX_TO_ID}
 
+    # Build separate datasets for each coarse class with class-specific processing
     ds_parts = []
     weights = []
-    for c in range(N_LESION_TYPE_CLASSES):
+    for c in range(N_LESION_TYPE_CLASSES):  # Iterate through all lesion type classes
         sub = train_df[train_df["head1_idx"] == c]
         if len(sub) == 0:
             continue
+        # Create dataset with backbone-specific augmentation and minority oversampling
         ds_c = utils.build_dataset(sub, is_training=True, backbone_type=backbone_type, 
                             minority_fine_ids=minority_fine_ids, 
                             fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
         ds_parts.append(ds_c)
         weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
+    
+    # Normalize weights for balanced sampling across classes
     weights = np.asarray(weights, dtype=np.float32)
     wsum = weights.sum()
     if not ds_parts:
         raise ValueError("Oversampling enabled but no per-class datasets were built.")
+    # Use equal weights if oversampling weights are not properly configured
     if wsum <= 1e-8:
         weights = np.full(len(ds_parts), 1.0 / len(ds_parts), dtype=np.float32)
     else:
         weights = weights / wsum
+    
+    # Create weighted sampling dataset for class balance
     train_ds = tf.data.Dataset.sample_from_datasets(
         ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
     )
@@ -379,8 +386,6 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
     print(f"Stacking ensemble trained and saved to: {meta_model_dir}")
     return meta_model, meta_model_dir
 
-# Removed evaluate_ensemble function - evaluation will be done in separate script
-
 # -------------------- Model Loading Functions --------------------
 
 def load_existing_models(train_df):
@@ -454,9 +459,6 @@ def load_existing_models(train_df):
     return models
 
 # -------------------- Main Functions --------------------
-
-# Removed create_and_evaluate_ensembles function - evaluation will be done in separate script
-
 def main():
     """
     Main function to run ensemble training.
@@ -481,7 +483,7 @@ def main():
     df = pd.read_csv(PREPARED_CSV)
     processed_df = utils.process_labels(df)
 
-    # Split data - Use proper 3-way split
+    # Split data 
     train_df = processed_df[processed_df.split == "train"].copy()
     val_df = processed_df[processed_df.split == "val"].copy()
     print("Using existing train/val/test split")

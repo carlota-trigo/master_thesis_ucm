@@ -55,32 +55,49 @@ DX_TO_ID = utils.DX_TO_ID
 LESION_TO_ID = utils.LESION_TO_ID
 
 def main():
+    """
+    Main training function for the base EfficientNet model.
+    
+    This is where the magic happens - we train our two-head model to classify
+    skin lesions both at a coarse level (benign/malignant/no lesion) and fine-grained
+    level (specific lesion types like melanoma, nevus, etc.).
+    """
+    # Set up our output directory - this is where we'll save everything
     OUTDIR.mkdir(exist_ok=True, parents=True)
     
+    # Load our preprocessed data - this CSV has all the image paths and labels
     df = pd.read_csv(PREPARED_CSV)
     processed_df = utils.process_labels(df)
 
+    # Split  data 
     train_df = processed_df[processed_df.split == "train"].copy()
     val_df = processed_df[processed_df.split == "val"].copy()
     print("Using existing train/val/test split")
     print(f"Train: {len(train_df)}, Val: {len(val_df)}")
     print("Note: Test set will be used later for unbiased evaluation")
    
+    # Define which fine-grained classes are considered "minority" 
     minority_fine_names = ["df", "vasc", "other", "no_lesion"]
     minority_fine_ids = {DX_TO_ID[n] for n in minority_fine_names if n in DX_TO_ID}
 
+    # Create separate datasets for each coarse class to handle class imbalance
     ds_parts = []
     weights = []
-    for c in [0, 1, 2]:
+    for c in [0, 1, 2]:  # 0=benign, 1=malignant, 2=no_lesion
         sub = train_df[train_df["head1_idx"] == c]
         if len(sub) == 0:
             continue
+        # Build dataset with class-specific augmentation and oversampling
         ds_c = utils.build_dataset(sub, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids, 
                             fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
         ds_parts.append(ds_c)
         weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
+    
+    # Normalize sampling weights for balanced training
     weights = np.asarray(weights, dtype=np.float32)
     weights = weights / (weights.sum() + 1e-8)
+    
+    # Create weighted sampling dataset to address class imbalance
     train_ds = tf.data.Dataset.sample_from_datasets(
         ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
     )
@@ -89,27 +106,32 @@ def main():
 
     print(f"Train samples: {len(train_df)}, Val samples: {len(val_df)}")
 
-    # Create model using utils
+    # Create two-head model
     model = utils.create_two_head_model('efficientnet', N_DX_CLASSES, N_LESION_TYPE_CLASSES)
     print(model.summary())
 
+    # Calculate training steps for our learning rate schedule
     steps_per_epoch = len(train_df) // BATCH_SIZE
     total_steps = EPOCHS * steps_per_epoch
     
+    # Use cosine decay for learning rate - starts high, gradually decreases
     lr_schedule = keras.optimizers.schedules.CosineDecay(
         initial_learning_rate=LR,
         decay_steps=total_steps,
         alpha=0.01
     )
     
+    # AdamW optimizer with weight decay for regularization
     optimizer = keras.optimizers.AdamW(learning_rate=lr_schedule, weight_decay=WEIGHT_DECAY)
     
-    # Calculate class weights and focal loss alpha
+    # Calculate class weights and focal loss alpha for handling imbalanced data
     coarse_counts = utils.counts_from_labels(train_df["head1_idx"], N_LESION_TYPE_CLASSES, (0, N_LESION_TYPE_CLASSES))
     coarse_alpha = utils.calculate_focal_alpha(coarse_counts)
     
+    # Focal loss
     coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
     
+    # Compile the model with our custom loss functions
     model.compile(
         optimizer=optimizer,
         loss={
@@ -122,7 +144,7 @@ def main():
         },
     )
 
-    # Callbacks
+    # Set up callbacks for training
     callbacks = utils.create_callbacks(OUTDIR, 'simple_twohead')
     
     # Add custom progress callback for detailed tracking
@@ -160,7 +182,6 @@ def main():
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting training...\n")
 
-    # Train
     history = model.fit(
         train_ds,
         validation_data=val_ds,
@@ -171,7 +192,7 @@ def main():
         verbose=1,
     )
 
-    # Save history
+    # Save training history for later analysis
     with open(OUTDIR / "stats.json", "w") as f:
         json.dump(history.history, f)
     

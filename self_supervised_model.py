@@ -1,8 +1,14 @@
 import os
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+# Disable oneDNN optimizations to avoid compatibility issues
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  
+# Use async CUDA memory allocator for better GPU memory management
+os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
+# Enable deterministic CuDNN operations for reproducibility
 os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+# Reduce TensorFlow logging verbosity
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  
+# Check if CPU-only mode is forced via environment variable
 FORCE_CPU_MODE = os.environ.get('CUDA_VISIBLE_DEVICES', '') == '-1'
 
 if FORCE_CPU_MODE:
@@ -387,6 +393,11 @@ def force_cpu_training():
 def main():
     """
     Main function to run SSL + Fine-tuning pipeline.
+    
+    This is the advanced approach - first we teach the model to understand
+    images without labels (self-supervised learning), then we fine-tune it
+    on our specific skin lesion classification task. It's like teaching
+    someone to recognize patterns before giving them specific labels!
     """
     global BATCH_SIZE_GPU  # Make BATCH_SIZE_GPU accessible within function
     
@@ -474,7 +485,7 @@ def main():
     # Split data 
     train_df = processed_df[processed_df.split == "train"].copy()
     val_df = processed_df[processed_df.split == "val"].copy()
-    # test_df will be used later in evaluation script
+ 
     print("Using existing train/val/test split")
     print(f"Train: {len(train_df)}, Val: {len(val_df)}")
     print("Note: Test set will be used later for unbiased evaluation")
@@ -487,18 +498,24 @@ def main():
     minority_fine_names = ["df", "vasc", "other", "no_lesion"]
     minority_fine_ids = {DX_TO_ID[n] for n in minority_fine_names if n in DX_TO_ID}
 
+    # Create separate datasets for each coarse class (benign, malignant, no_lesion)
     ds_parts = []
     weights = []
-    for c in [0, 1, 2]:
+    for c in [0, 1, 2]:  # 0=benign, 1=malignant, 2=no_lesion
         sub = train_df[train_df["head1_idx"] == c]
         if len(sub) == 0:
             continue
+        # Build dataset with class-specific preprocessing and oversampling
         ds_c = utils.build_dataset(sub, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids, 
                             fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
         ds_parts.append(ds_c)
         weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
+    
+    # Normalize weights to create balanced sampling across classes
     weights = np.asarray(weights, dtype=np.float32)
     weights = weights / (weights.sum() + 1e-8)
+    
+    # Create weighted sampling dataset to handle class imbalance
     train_ds = tf.data.Dataset.sample_from_datasets(
         ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
     )

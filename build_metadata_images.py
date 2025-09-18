@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 
 """
-Construye metadata_complete.csv combinando metadata.csv con métricas de calidad de imagen.
+Builds metadata_complete.csv by combining metadata.csv with image quality metrics.
 
-- Lee metadata de --metadata (por defecto data_clean/metadata.csv)
-- Indexa imágenes en --images-dir (por defecto data_clean/images)
-- Resuelve image_id -> ruta local (tolerando ausencia de extensión y subcarpetas)
-- Calcula métricas (brillo, contraste, blur, bordes negros, etc.)
-- Mergea y escribe --out (por defecto data_clean/metadata_complete.csv)
-- Escribe errores (si los hay) en data_clean/qc_errors.csv
+- Reads metadata from --metadata (default: data_clean/metadata.csv)
+- Indexes images in --images-dir (default: data_clean/images)
+- Resolves image_id -> local path (tolerating missing extensions and subfolders)
+- Calculates metrics (brightness, contrast, blur, black borders, etc.)
+- Merges and writes --out (default: data_clean/metadata_complete.csv)
+- Writes errors (if any) to data_clean/qc_errors.csv
 
-Dependencias:
+Dependencies:
     pip install pandas numpy pillow imagehash opencv-python-headless tqdm
 """
 
@@ -37,12 +37,12 @@ def find_image_column(df: pd.DataFrame) -> str:
         if c in df.columns:
             return c
     raise ValueError(
-        "No encuentro la columna con los nombres de imagen. "
-        f"Intenta renombrar a 'image_id'. Columnas disponibles: {list(df.columns)}"
+        "Could not find column with image names. "
+        f"Try renaming to 'image_id'. Available columns: {list(df.columns)}"
     )
 
 def index_images(images_dir: Path):
-    """Devuelve (all_paths, filename_to_path, stem_to_paths)"""
+    """Returns (all_paths, filename_to_path, stem_to_paths)"""
     all_paths = []
     for p in images_dir.rglob("*"):
         if p.is_file() and p.suffix.lower() in EXTS:
@@ -59,11 +59,11 @@ def index_images(images_dir: Path):
 
 def resolve_path(image_id: str, images_dir: Path, filename_to_path, stem_to_paths):
     """
-    Resuelve un 'image_id' a una ruta Path local, intentando:
-      1) Ruta directa (si 'image_id' trae subcarpetas relativas a images_dir)
-      2) Match exacto por nombre de archivo
-      3) Match por stem (sin extensión)
-      4) Probar extensiones comunes
+    Resolves an 'image_id' to a local Path, trying:
+      1) Direct path (if 'image_id' contains subfolders relative to images_dir)
+      2) Exact match by filename
+      3) Match by stem (without extension)
+      4) Try common extensions
     """
     s = str(image_id).strip().replace("\\", "/")
     base = os.path.basename(s)
@@ -144,17 +144,17 @@ def qc_metrics_local(path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Construye metadata_images.csv localmente (métricas básicas de color/iluminación)."
+        description="Build metadata_images.csv locally (basic color/lighting metrics)."
     )
     parser.add_argument("--images-dir", type=str, default="data_clean/images",
-                        help="Directorio raíz con las imágenes (recursivo).")
+                        help="Root directory with images (recursive).")
     parser.add_argument("--out", type=str, default="data_clean/metadata_images.csv",
-                        help="Ruta de salida del CSV de métricas por imagen.")
+                        help="Output CSV path for metrics per image.")
     parser.add_argument("--errors-out", type=str, default=None,
-                        help="CSV para errores (por defecto: <images-dir>/../qc_errors.csv).")
+                        help="CSV for errors (default: <images-dir>/../qc_errors.csv).")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1),
-                        help="Número de hilos para procesar imágenes.")
-    parser.add_argument("--limit", type=int, default=None, help="Procesar solo N imágenes (debug).")
+                        help="Number of threads for processing images.")
+    parser.add_argument("--limit", type=int, default=None, help="Process only N images (debug).")
     args = parser.parse_args()
 
     images_dir = Path(args.images_dir).resolve()
@@ -166,23 +166,23 @@ def main():
     )
 
     if not images_dir.exists():
-        print(f"[ERROR] No existe el directorio de imágenes: {images_dir}", file=sys.stderr)
+        print(f"[ERROR] Images directory does not exist: {images_dir}", file=sys.stderr)
         sys.exit(1)
 
-        print(f"Indexando imágenes en: {images_dir} (recursivo)")
+        print(f"Indexing images in: {images_dir} (recursive)")
     all_paths, _, _ = index_images(images_dir)
-    print(f"Imágenes encontradas: {len(all_paths)}")
+    print(f"Images found: {len(all_paths)}")
     if not all_paths:
-        print("[ERROR] No se encontraron imágenes en el directorio indicado.", file=sys.stderr)
+        print("[ERROR] No images found in the specified directory.", file=sys.stderr)
         sys.exit(2)
 
         paths_to_process = all_paths
     if args.limit is not None:
         paths_to_process = paths_to_process[:args.limit]
-        print(f"[DEBUG] limit={args.limit} → procesando {len(paths_to_process)} imágenes.")
+        print(f"[DEBUG] limit={args.limit} → processing {len(paths_to_process)} images.")
 
         rows, errs = [], []
-    print(f"Calculando métricas con {args.workers} hilos…")
+    print(f"Calculating metrics with {args.workers} threads…")
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futures = {ex.submit(qc_metrics_local, p): p for p in paths_to_process}
         for fut in tqdm(as_completed(futures), total=len(futures)):
@@ -207,7 +207,7 @@ def main():
                 row["image_path"] = image_path_str
                 rows.append(row)
 
-    print(f"Métricas OK: {len(rows)}   |   Errores: {len(errs)}")
+    print(f"Metrics OK: {len(rows)}   |   Errors: {len(errs)}")
     Q = pd.DataFrame(rows)
 
     if "image_path" in Q.columns:
@@ -218,12 +218,12 @@ def main():
 
         out_csv.parent.mkdir(parents=True, exist_ok=True)
     Q.to_csv(out_csv, index=False)
-    print(f"[OK] Escrito: {out_csv}")
+    print(f"[OK] Written: {out_csv}")
 
     if errs:
         errors_csv.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(errs).to_csv(errors_csv, index=False)
-        print(f"[OK] Errores guardados en: {errors_csv}")
+        print(f"[OK] Errors saved to: {errors_csv}")
 
         cols_metrics = [
         "width", "height", "brightness", "blur_var",
@@ -232,7 +232,7 @@ def main():
         "r_std", "g_std", "b_std",
     ]
     have_metrics = [c for c in cols_metrics if c in Q.columns]
-    print("\nResumen rápido (primeras 5 filas con métricas disponibles):")
+    print("\nQuick summary (first 5 rows with available metrics):")
     cols_to_show = ["image_id"]
     if "image_relpath" in Q.columns:
         cols_to_show.append("image_relpath")
