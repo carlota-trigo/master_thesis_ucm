@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Utility function. Consolidates common functions used across multiple scripts
 """
@@ -19,23 +18,15 @@ import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
 
-# =============================================================================
-# CONSTANTS AND CONFIGURATION
-# =============================================================================
-
-# Reproducibility
 SEED = 999
 
-# Data paths
 DATA_DIR = Path("../data")
 PREPARED_CSV = DATA_DIR / "training_prepared_data.csv"
 IMAGE_PATH = DATA_DIR.joinpath("images", "images")
 
-# Model configuration
 IMG_SIZE = 224
-BATCH_SIZE = 128  
+BATCH_SIZE = 64  
 
-# Class definitions
 DX_CLASSES = sorted(['nv', 'mel', 'bkl', 'bcc', 'scc_akiec', 'vasc', 'df', 'other', 'no_lesion'])
 LESION_TYPE_CLASSES = ["benign", "malignant", "no_lesion"]
 N_DX_CLASSES = len(DX_CLASSES)
@@ -43,7 +34,6 @@ N_LESION_TYPE_CLASSES = len(LESION_TYPE_CLASSES)
 DX_TO_ID = {n: i for i, n in enumerate(DX_CLASSES)}
 LESION_TO_ID = {n: i for i, n in enumerate(LESION_TYPE_CLASSES)}
 
-# Training configuration
 USE_FOCAL_COARSE = True
 FOCAL_GAMMA = 2.0
 USE_SAMPLE_WEIGHTS = True
@@ -63,9 +53,7 @@ FINE_MINORITY_OVERSAMPLING = {
 USE_OOD_OE = True
 LAMBDA_OE = 0.1
 
-# =============================================================================
 # REPRODUCIBILITY UTILITIES
-# =============================================================================
 
 def set_seed(seed=SEED):
     """Set random seeds for reproducibility."""
@@ -74,9 +62,7 @@ def set_seed(seed=SEED):
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
-# =============================================================================
 # CLASS BALANCING UTILITIES
-# =============================================================================
 
 def class_balanced_weights(counts, beta=CLASS_BALANCED_BETA):
     """Calculate class-balanced weights using effective number."""
@@ -119,9 +105,7 @@ def counts_from_labels(series, n_classes, valid_range=(0, None)):
     counts = np.bincount(y, minlength=n_classes)
     return counts
 
-# =============================================================================
 # DATA AUGMENTATION UTILITIES
-# =============================================================================
 
 def build_augmenter(is_training, augmentation_strength='medium'):
     """Build data augmenter based on training mode and strength."""
@@ -192,10 +176,6 @@ def augment_minority(img):
     noise = tf.random.normal(tf.shape(img), mean=0.0, stddev=3.0, dtype=img.dtype)
     img = tf.clip_by_value(img + noise, 0.0, 255.0)
     return img
-
-# =============================================================================
-# DATASET BUILDING UTILITIES
-# =============================================================================
 
 def resolve_image_path(path):
     """Resolve image path to absolute path."""
@@ -325,9 +305,7 @@ def build_dataset(df, is_training=False, backbone_type='efficientnet',
         ds = ds.cache()
     return ds
 
-# =============================================================================
 # MODEL CREATION UTILITIES
-# =============================================================================
 
 def create_efficientnet_backbone(img_size=IMG_SIZE):
     """Create EfficientNetB1 backbone."""
@@ -391,9 +369,7 @@ def create_two_head_model(backbone_type='efficientnet', n_fine=N_DX_CLASSES,
     model = keras.Model(inputs=inputs, outputs=[output_coarse, output_fine], name=model_name)
     return model
 
-# =============================================================================
 # LOSS FUNCTIONS
-# =============================================================================
 
 def masked_sparse_categorical_crossentropy(y_true, y_pred):
     """Masked sparse categorical crossentropy loss."""
@@ -442,9 +418,7 @@ def sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=None):
         return tf.reduce_mean(fl)
     return loss
 
-# =============================================================================
 # MODEL LOADING UTILITIES
-# =============================================================================
 
 def load_individual_model(model_path, backbone_type='efficientnet'):
     """Load individual model from path."""
@@ -499,9 +473,7 @@ def load_ensemble_models(individual_dir):
     
     return ensemble_models
 
-# =============================================================================
 # PREDICTION UTILITIES
-# =============================================================================
 
 def get_predictions_and_labels(model, dataset):
     """Get predictions and labels from a model."""
@@ -625,9 +597,7 @@ def get_ensemble_predictions(ensemble_models, dataset, method='voting', val_data
     # CORRECTED: Return in correct order [coarse, fine] to match individual models
     return labels_h1, coarse_preds, labels_h2, fine_preds
 
-# =============================================================================
 # EVALUATION UTILITIES
-# =============================================================================
 
 def calculate_metrics(labels, preds, class_names):
     """Calculate comprehensive metrics."""
@@ -684,9 +654,7 @@ def get_msp_scores(logits):
     softmax_probs = tf.nn.softmax(logits, axis=1).numpy()
     return np.max(softmax_probs, axis=1)
 
-# =============================================================================
 # DATA PROCESSING UTILITIES
-# =============================================================================
 
 def process_labels(df):
     """Process and clean labels in dataframe."""
@@ -722,9 +690,7 @@ def process_labels(df):
     
     return df
 
-# =============================================================================
 # CALLBACK UTILITIES
-# =============================================================================
 
 def create_callbacks(model_dir, backbone_type, monitor="val_coarse_output_loss"):
     """Create standard callbacks for training."""
@@ -755,9 +721,7 @@ def create_callbacks(model_dir, backbone_type, monitor="val_coarse_output_loss")
     ]
     return callbacks
 
-# =============================================================================
 # VISUALIZATION UTILITIES
-# =============================================================================
 
 def plot_model_comparison(comparison_df, all_metrics, models_config):
     """Plot comprehensive model comparison."""
@@ -823,9 +787,7 @@ def plot_ood_detection(all_predictions, models_config):
     plt.tight_layout()
     plt.show()
 
-# =============================================================================
 # FILE UTILITIES
-# =============================================================================
 
 def save_results(output_dir, comparison_df, all_metrics, ood_results, summary_report):
     """Save comprehensive results to files."""
@@ -851,9 +813,7 @@ def save_results(output_dir, comparison_df, all_metrics, ood_results, summary_re
         f.write(summary_report)
     print(f"✓ Saved summary report to: {output_dir / 'summary_report.md'}")
 
-# =============================================================================
 # INITIALIZATION
-# =============================================================================
 
 # Set seed on import
 set_seed(SEED)

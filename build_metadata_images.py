@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 Construye metadata_complete.csv combinando metadata.csv con métricas de calidad de imagen.
@@ -30,9 +29,7 @@ import cv2
 import imagehash
 from tqdm import tqdm
 
-
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-
 
 def find_image_column(df: pd.DataFrame) -> str:
     candidates = ["image_id", "image", "filename", "file", "img", "name"]
@@ -44,7 +41,6 @@ def find_image_column(df: pd.DataFrame) -> str:
         f"Intenta renombrar a 'image_id'. Columnas disponibles: {list(df.columns)}"
     )
 
-
 def index_images(images_dir: Path):
     """Devuelve (all_paths, filename_to_path, stem_to_paths)"""
     all_paths = []
@@ -52,9 +48,7 @@ def index_images(images_dir: Path):
         if p.is_file() and p.suffix.lower() in EXTS:
             all_paths.append(p.resolve())
 
-    filename_to_path = {}          # 'foo.jpg' -> Path
-    stem_to_paths = {}             # 'foo'     -> [Path, ...]
-
+    filename_to_path = {}              stem_to_paths = {}             
     for p in all_paths:
         name = p.name
         stem = p.stem
@@ -62,7 +56,6 @@ def index_images(images_dir: Path):
         stem_to_paths.setdefault(stem, []).append(p)
 
     return all_paths, filename_to_path, stem_to_paths
-
 
 def resolve_path(image_id: str, images_dir: Path, filename_to_path, stem_to_paths):
     """
@@ -75,29 +68,23 @@ def resolve_path(image_id: str, images_dir: Path, filename_to_path, stem_to_path
     s = str(image_id).strip().replace("\\", "/")
     base = os.path.basename(s)
 
-    # 1) si trae subcarpetas relativas al prefijo, prueba directo
     cand = (images_dir / s).resolve()
     if cand.exists():
         return cand
 
-    # 2) match exacto por nombre de archivo
     if base in filename_to_path:
         return filename_to_path[base]
 
-    # 3) match por 'stem' (sin extensión)
     stem, ext = os.path.splitext(base)
     if ext == "" and stem in stem_to_paths:
-        # si hay varias, elige la primera
-        return stem_to_paths[stem][0]
+            return stem_to_paths[stem][0]
 
-    # 4) probar extensiones comunes
     for e in EXTS:
         cand2 = (images_dir / (base + e)).resolve()
         if cand2.exists():
             return cand2
 
     return None
-
 
 def qc_metrics_local(path: Path):
     """
@@ -112,16 +99,13 @@ def qc_metrics_local(path: Path):
     Returns a dict with ONLY these fields (or {'error': ...} on failure).
     """
     try:
-        # Read and open (respect EXIF orientation), force RGB
         with open(path, "rb") as f:
             data = f.read()
         im = Image.open(BytesIO(data)).convert("RGB")
         im = ImageOps.exif_transpose(im)
 
         w, h = im.size
-        arr = np.array(im, dtype=np.uint8)  # H x W x 3
-
-        # ---- RGB channel statistics ----
+        arr = np.array(im, dtype=np.uint8)  
         Rc = arr[..., 0].astype(np.float32)
         Gc = arr[..., 1].astype(np.float32)
         Bc = arr[..., 2].astype(np.float32)
@@ -129,19 +113,16 @@ def qc_metrics_local(path: Path):
         r_mean = float(Rc.mean()); g_mean = float(Gc.mean()); b_mean = float(Bc.mean())
         r_std  = float(Rc.std());  g_std  = float(Gc.std());  b_std  = float(Bc.std())
 
-        # ---- Grayscale + core QC metrics ----
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
         brightness = float(gray.mean())
         blur_var   = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-        # ---- Hue entropy (HSV-H, 180 bins) ----
         hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
         Hc = hsv[..., 0]
         hhist_density, _ = np.histogram(Hc, bins=180, range=(0, 180), density=True)
         hhist_density = hhist_density + 1e-12
         hue_entropy = float(-(hhist_density * np.log2(hhist_density)).sum())
 
-        # ---- Hair ratio (black-hat morphology + dark threshold) ----
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
         blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, k)
         hair_mask = (blackhat > 10) & (gray < 90)
@@ -160,7 +141,6 @@ def qc_metrics_local(path: Path):
 
     except Exception as e:
         return {"error": str(e)}
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -189,31 +169,27 @@ def main():
         print(f"[ERROR] No existe el directorio de imágenes: {images_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Indexar imágenes
-    print(f"Indexando imágenes en: {images_dir} (recursivo)")
+        print(f"Indexando imágenes en: {images_dir} (recursivo)")
     all_paths, _, _ = index_images(images_dir)
     print(f"Imágenes encontradas: {len(all_paths)}")
     if not all_paths:
         print("[ERROR] No se encontraron imágenes en el directorio indicado.", file=sys.stderr)
         sys.exit(2)
 
-    # Preparar lista a procesar
-    paths_to_process = all_paths
+        paths_to_process = all_paths
     if args.limit is not None:
         paths_to_process = paths_to_process[:args.limit]
         print(f"[DEBUG] limit={args.limit} → procesando {len(paths_to_process)} imágenes.")
 
-    # Procesar en paralelo
-    rows, errs = [], []
+        rows, errs = [], []
     print(f"Calculando métricas con {args.workers} hilos…")
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futures = {ex.submit(qc_metrics_local, p): p for p in paths_to_process}
         for fut in tqdm(as_completed(futures), total=len(futures)):
-            p = futures[fut]  # Path of this future
+            p = futures[fut]              
             try:
                 res = fut.result()
             except Exception as e:
-                # Por si alguna excepción se escapa del qc_metrics_local
                 res = {"error": str(e)}
 
             image_path_str = str(p)
@@ -226,7 +202,6 @@ def main():
                     "error": res["error"]
                 })
             else:
-                # Asegurar claves de identificación en cada fila
                 row = dict(res)
                 row["image_id"] = image_id_str
                 row["image_path"] = image_path_str
@@ -235,15 +210,13 @@ def main():
     print(f"Métricas OK: {len(rows)}   |   Errores: {len(errs)}")
     Q = pd.DataFrame(rows)
 
-    # Añadir ruta relativa (útil si hay nombres repetidos)
     if "image_path" in Q.columns:
         try:
             Q["image_relpath"] = Q["image_path"].apply(lambda s: os.path.relpath(str(s), str(images_dir)))
         except Exception:
             Q["image_relpath"] = Q["image_path"]
 
-    # Guardar salidas
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
     Q.to_csv(out_csv, index=False)
     print(f"[OK] Escrito: {out_csv}")
 
@@ -252,8 +225,7 @@ def main():
         pd.DataFrame(errs).to_csv(errors_csv, index=False)
         print(f"[OK] Errores guardados en: {errors_csv}")
 
-    # Resumen rápido (adaptado a las nuevas métricas)
-    cols_metrics = [
+        cols_metrics = [
         "width", "height", "brightness", "blur_var",
         "hue_entropy", "hair_ratio",
         "r_mean", "g_mean", "b_mean",

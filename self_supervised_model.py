@@ -1,15 +1,8 @@
-# src/self_supervised_model.py
-# -*- coding: utf-8 -*-
 import os
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN warnings
-# GPU memory optimization
-os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
-# Fix CuDNN version mismatch issues
 os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TensorFlow logging
-
-# Check if we should force CPU mode (from environment or restart)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  
 FORCE_CPU_MODE = os.environ.get('CUDA_VISIBLE_DEVICES', '') == '-1'
 
 if FORCE_CPU_MODE:
@@ -20,11 +13,9 @@ if FORCE_CPU_MODE:
     print("Training will be slower but more stable")
     print("="*60)
 
-# Fallback options for CuDNN issues
 try:
     import tensorflow as tf
-    # Test if CuDNN is working
-    tf.config.experimental.list_physical_devices('GPU')
+        tf.config.experimental.list_physical_devices('GPU')
 except Exception as e:
     print(f"CuDNN initialization warning: {e}")
     print("Will attempt to continue with fallback options...")
@@ -41,13 +32,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 
-# -------------------- Repro --------------------
 utils.set_seed(utils.SEED)
-
-# Configure GPU for optimal performance
-print("="*60)
-print("GPU CONFIGURATION")
-print("="*60)
 
 # List all available devices
 print("Available devices:")
@@ -121,8 +106,6 @@ else:
         print("Falling back to CPU training")
         use_gpu = False
 
-# -------------------- Config --------------------
-# Use constants from utils
 DATA_DIR = utils.DATA_DIR
 PREPARED_CSV = utils.PREPARED_CSV
 IMAGE_PATH = utils.IMAGE_PATH
@@ -160,7 +143,6 @@ HIDDEN_DIM = 512
 USE_GRADIENT_CHECKPOINTING = True
 MAX_GPU_MEMORY_FRACTION = 0.8  # Use only 80% of GPU memory
 
-# Use constants from utils
 USE_FOCAL_COARSE = utils.USE_FOCAL_COARSE
 FOCAL_GAMMA = utils.FOCAL_GAMMA
 USE_SAMPLE_WEIGHTS = utils.USE_SAMPLE_WEIGHTS
@@ -180,10 +162,7 @@ N_LESION_TYPE_CLASSES = utils.N_LESION_TYPE_CLASSES
 DX_TO_ID = utils.DX_TO_ID
 LESION_TO_ID = utils.LESION_TO_ID
 
-# -------------------- Utils --------------------
-# All utility functions are now imported from utils module
 
-# -------------------- SimCLR Data Augmentation --------------------
 def simclr_augment(image, img_size=IMG_SIZE):
     # to float32 in [0,1]
     image = tf.image.convert_image_dtype(image, tf.float32)
@@ -200,13 +179,6 @@ def simclr_augment(image, img_size=IMG_SIZE):
     image = tf.image.random_saturation(image, 0.9, 1.1)      # Reduced range
     image = tf.image.random_hue(image, 0.05)                 # Reduced from 0.08
 
-    # Removed Gaussian blur to reduce memory usage
-    # Optional: Add back if memory allows
-    # if tf.random.uniform([]) < 0.3:  # Reduced probability
-    #     kernel = tf.constant([[1,2,1],[2,4,2],[1,2,1]], tf.float32) / 16.0
-    #     kernel = tf.tile(kernel[:, :, None, None], [1, 1, 3, 1])  # [3,3,3,1]
-    #     image = tf.nn.depthwise_conv2d(image[None, ...], kernel, [1,1,1,1], "SAME")[0]
-
     # resize+random crop
     image = tf.image.resize(image, [256, 256])
     image = tf.image.random_crop(image, [img_size, img_size, 3])
@@ -217,37 +189,8 @@ def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
     df = df.copy()
     def resolve_path(p):
         p = str(p)
-        
-        # Check if it's a Windows path (starts with drive letter like C:)
-        if ':' in p and ('\\' in p or p.startswith('C:') or p.startswith('D:')):
-            # Windows path - extract just the filename
-            if '\\' in p:
-                filename = p.split('\\')[-1]
-            else:
-                filename = p.split('/')[-1]  # fallback for forward slashes
-            
-            linux_path = str(IMAGE_PATH / filename)
-            if os.path.exists(linux_path):
-                return linux_path
-            else:
-                print(f"Warning: Could not find image file: {filename}")
-                return linux_path  # Return the constructed path anyway
-        
-        # If it's already an absolute Unix path, check if it exists
-        elif os.path.isabs(p):
-            if os.path.exists(p):
-                return p
-            else:
-                filename = os.path.basename(p)
-                linux_path = str(IMAGE_PATH / filename)
-                if os.path.exists(linux_path):
-                    return linux_path
-                else:
-                    print(f"Warning: Could not find image file: {filename}")
-                    return linux_path
-        
-        # Check if it's already a relative path that starts with ../data/images/images/
-        elif p.startswith('../data/images/images/'):
+                
+        if p.startswith('../data/images/images/'):
             # This is our new relative path format - use it as is
             if os.path.exists(p):
                 return p
@@ -257,6 +200,7 @@ def create_simclr_dataset(df, img_size=IMG_SIZE, batch_size=BATCH_SIZE):
         
         # For other relative paths (just filename), construct the full path
         return str(IMAGE_PATH / p)
+    
     df["image_path"] = df["image_path"].astype(str).apply(resolve_path)
 
     paths = df["image_path"].tolist()
@@ -296,65 +240,29 @@ def create_simclr_model(img_size=IMG_SIZE, projection_dim=PROJECTION_DIM, hidden
     """
     Create SimCLR model with encoder and projection head.
     """
-    # Encoder (backbone) - Robust EfficientNet loading with fallbacks
-    if PRETRAINED:
-        encoder = None
-        encoder_name = None
-        
-        # Try different EfficientNet variants in order of preference
-        efficientnet_variants = [
-            ("EfficientNetB1", lambda: tf.keras.applications.EfficientNetB1(
-                include_top=False, weights="imagenet", input_shape=(img_size, img_size, 3))),
-            ("EfficientNetB0", lambda: tf.keras.applications.EfficientNetB0(
-                include_top=False, weights="imagenet", input_shape=(img_size, img_size, 3))),
-            ("EfficientNetB1 (no weights)", lambda: tf.keras.applications.EfficientNetB1(
-                include_top=False, weights=None, input_shape=(img_size, img_size, 3))),
-        ]
-        
-        for name, model_fn in efficientnet_variants:
-            try:
-                encoder = model_fn()
-                encoder_name = name
-                print(f"Successfully loaded {name}")
-                break
-            except Exception as e:
-                print(f"Failed to load {name}: {e}")
-                continue
-        
-        # Final fallback to ResNet50 if all EfficientNet variants fail
-        if encoder is None:
-            try:
-                encoder = tf.keras.applications.ResNet50(
-                    include_top=False,
-                    weights="imagenet",
-                    input_shape=(img_size, img_size, 3),
-                )
-                encoder_name = "ResNet50"
-                print("Using ResNet50 with ImageNet weights as fallback")
-            except Exception as e:
-                print(f"Even ResNet50 failed: {e}")
-                print("Using ResNet50 with random initialization")
-                encoder = tf.keras.applications.ResNet50(
-                    include_top=False,
-                    weights=None,
-                    input_shape=(img_size, img_size, 3),
-                )
-                encoder_name = "ResNet50 (no weights)"
-        
-        print(f"Final encoder: {encoder_name}")
-    else:
-        encoder = tf.keras.applications.EfficientNetB1(
-            include_top=False,
-            weights=None,
-            input_shape=(img_size, img_size, 3),
-        )
-        print("Using EfficientNetB1 with random initialization")
+    encoder = None
+    encoder_name = None
     
-    # Apply gradient checkpointing to reduce memory usage
-    if USE_GRADIENT_CHECKPOINTING:
-        print("Enabling gradient checkpointing for memory efficiency")
-        # Note: Gradient checkpointing is handled at training time
+    # Try different EfficientNet variants in order of preference
+    efficientnet_variants = [
+        ("EfficientNetB1", lambda: tf.keras.applications.EfficientNetB1(
+            include_top=False, weights="imagenet", input_shape=(img_size, img_size, 3))),
+        ("EfficientNetB1 (no weights)", lambda: tf.keras.applications.EfficientNetB1(
+            include_top=False, weights=None, input_shape=(img_size, img_size, 3))),
+    ]
     
+    for name, model_fn in efficientnet_variants:
+        try:
+            encoder = model_fn()
+            encoder_name = name
+            print(f"Successfully loaded {name}")
+            break
+        except Exception as e:
+            print(f"Failed to load {name}: {e}")
+            continue
+            
+    print(f"Final encoder: {encoder_name}")
+       
     # Projection head
     inputs = keras.Input(shape=(img_size, img_size, 3), name="input")
     features = encoder(inputs)
@@ -492,28 +400,12 @@ def main():
     SSL_OUTDIR.mkdir(exist_ok=True, parents=True)
     
     # Load data
-    try:
-        df = pd.read_csv(PREPARED_CSV)
-        print(f"Loaded dataset with {len(df)} samples")
-    except FileNotFoundError:
-        print(f"Error: Could not find {PREPARED_CSV}")
-        print("Please ensure the data file exists and path is correct.")
-        return
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return
+    df = pd.read_csv(PREPARED_CSV)
     
     # Use all available data for SSL (including unlabeled)
     ssl_df = df.copy()
     print(f"Using {len(ssl_df)} samples for SSL training")
-    
-    # Validate dataset size
-    if len(ssl_df) < BATCH_SIZE:
-        print(f"Error: Dataset too small ({len(ssl_df)} samples). Need at least {BATCH_SIZE} samples.")
-        return
-    if len(ssl_df) < 100:
-        print(f"⚠️  Warning: Very small dataset ({len(ssl_df)} samples). Training may be unstable.")
-    
+       
     # Create SSL dataset with GPU-optimized batch size
     ssl_ds = create_simclr_dataset(ssl_df, batch_size=BATCH_SIZE_GPU)
     
@@ -522,12 +414,7 @@ def main():
     
     # Compile model with gradient checkpointing
     optimizer = keras.optimizers.AdamW(learning_rate=LR_SSL, weight_decay=WEIGHT_DECAY)
-    
-    # Enable gradient checkpointing if specified
-    if USE_GRADIENT_CHECKPOINTING:
-        print("Applying gradient checkpointing to reduce memory usage...")
-        # This will be handled in the training loop
-    
+     
     ssl_model.compile(
         optimizer=optimizer,
         loss=simclr_loss(),
@@ -549,85 +436,21 @@ def main():
     print(f"- Total SSL steps: {ssl_steps_per_epoch * SSL_EPOCHS}")
     print(f"- Batch size: {BATCH_SIZE_GPU}")
     print(f"- Learning rate: {LR_SSL}")
-    if FORCE_CPU_MODE:
-        print(f"- Hardware: CPU (forced due to CuDNN issues)")
-        print(f"- Mixed precision: Disabled (CPU mode)")
-    else:
-        print(f"- Hardware: {'GPU (RTX 4090)' if use_gpu else 'CPU'}")
-        print(f"- Mixed precision: {'Enabled (float16)' if use_gpu else 'Disabled (CPU)'}")
     print(f"- Early stopping: Enabled (patience=10)")
     print(f"\nStarting SSL training...\n")
     
     # Train SSL model with memory management
     print("Training SimCLR model...")
-    
-    try:
-        # Clean memory before training
-        cleanup_memory()
+    cleanup_memory()
         
-        ssl_history = ssl_model.fit(
-            ssl_ds,
-            epochs=SSL_EPOCHS,
-            steps_per_epoch=ssl_steps_per_epoch,
-            callbacks=callbacks,
-            verbose=1,
-        )
-    except Exception as e:
-        print(f"SSL training failed: {e}")
+    ssl_history = ssl_model.fit(
+        ssl_ds,
+        epochs=SSL_EPOCHS,
+        steps_per_epoch=ssl_steps_per_epoch,
+        callbacks=callbacks,
+        verbose=1,
+    )
         
-        # Check if it's a CuDNN/GPU issue
-        if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
-            print("Detected CuDNN/GPU issue. Restarting with CPU-only mode...")
-            restart_with_cpu()
-            
-            # Recreate model for CPU training
-            print("Recreating model for CPU training...")
-            ssl_model = create_simclr_model()
-            
-            # Compile model for CPU
-            optimizer = keras.optimizers.AdamW(learning_rate=LR_SSL, weight_decay=WEIGHT_DECAY)
-            ssl_model.compile(
-                optimizer=optimizer,
-                loss=simclr_loss(),
-            )
-            
-            # Recreate dataset with CPU batch size
-            BATCH_SIZE_GPU = 16  # Smaller batch size for CPU
-            ssl_ds = create_simclr_dataset(ssl_df, batch_size=BATCH_SIZE_GPU)
-            ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE_GPU
-            if ssl_steps_per_epoch == 0:
-                ssl_steps_per_epoch = 1
-            
-            print(f"Retrying with CPU training, batch size {BATCH_SIZE_GPU}")
-            ssl_history = ssl_model.fit(
-                ssl_ds,
-                epochs=SSL_EPOCHS,
-                steps_per_epoch=ssl_steps_per_epoch,
-                callbacks=callbacks,
-                verbose=1,
-            )
-        else:
-            print("Attempting memory cleanup and retry with smaller batch size...")
-            
-            # Clean memory and try with smaller batch size
-            cleanup_memory()
-            
-            # Reduce batch size and retry
-            BATCH_SIZE_GPU = 32  # Further reduce batch size
-            ssl_ds = create_simclr_dataset(ssl_df, batch_size=BATCH_SIZE_GPU)
-            ssl_steps_per_epoch = len(ssl_df) // BATCH_SIZE_GPU
-            if ssl_steps_per_epoch == 0:
-                ssl_steps_per_epoch = 1
-                
-            print(f"Retrying with batch size {BATCH_SIZE_GPU}")
-            ssl_history = ssl_model.fit(
-                ssl_ds,
-                epochs=SSL_EPOCHS,
-                steps_per_epoch=ssl_steps_per_epoch,
-                callbacks=callbacks,
-                verbose=1,
-            )
-    
     # Save SSL history
     with open(SSL_OUTDIR / "stats.json", "w") as f:
         json.dump(ssl_history.history, f)
@@ -648,25 +471,13 @@ def main():
     # Load and process data using utils
     processed_df = utils.process_labels(df)
 
-    # Split data - Use proper 3-way split (test set will be used later for evaluation)
-    if "split" in processed_df.columns:
-        train_df = processed_df[processed_df.split == "train"].copy()
-        val_df = processed_df[processed_df.split == "val"].copy()
-        # test_df will be used later in evaluation script
-        print("Using existing train/val/test split")
-        print(f"Train: {len(train_df)}, Val: {len(val_df)}")
-        print("Note: Test set will be used later for unbiased evaluation")
-    else:
-        # Fallback: Create 3-way split if no split column exists
-        train_val_df, test_df = train_test_split(
-            processed_df, test_size=0.15, stratify=processed_df['head1_idx'], random_state=utils.SEED
-        )
-        train_df, val_df = train_test_split(
-            train_val_df, test_size=0.2, stratify=train_val_df['head1_idx'], random_state=utils.SEED
-        )
-        print("Created stratified train/val/test split")
-        print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
-        print("Note: Test set will be used later for unbiased evaluation")
+    # Split data 
+    train_df = processed_df[processed_df.split == "train"].copy()
+    val_df = processed_df[processed_df.split == "val"].copy()
+    # test_df will be used later in evaluation script
+    print("Using existing train/val/test split")
+    print(f"Train: {len(train_df)}, Val: {len(val_df)}")
+    print("Note: Test set will be used later for unbiased evaluation")
 
     # Calculate class weights using utils
     coarse_counts = utils.counts_from_labels(train_df["head1_idx"], N_LESION_TYPE_CLASSES, (0, N_LESION_TYPE_CLASSES))    
@@ -676,25 +487,21 @@ def main():
     minority_fine_names = ["df", "vasc", "other", "no_lesion"]
     minority_fine_ids = {DX_TO_ID[n] for n in minority_fine_names if n in DX_TO_ID}
 
-    if USE_OVERSAMPLING:
-        ds_parts = []
-        weights = []
-        for c in [0, 1, 2]:
-            sub = train_df[train_df["head1_idx"] == c]
-            if len(sub) == 0:
-                continue
-            ds_c = utils.build_dataset(sub, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids, 
-                               fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-            ds_parts.append(ds_c)
-            weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
-        weights = np.asarray(weights, dtype=np.float32)
-        weights = weights / (weights.sum() + 1e-8)
-        train_ds = tf.data.Dataset.sample_from_datasets(
-            ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
-        )
-    else:
-        train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
-                                 fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+    ds_parts = []
+    weights = []
+    for c in [0, 1, 2]:
+        sub = train_df[train_df["head1_idx"] == c]
+        if len(sub) == 0:
+            continue
+        ds_c = utils.build_dataset(sub, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids, 
+                            fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+        ds_parts.append(ds_c)
+        weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
+    weights = np.asarray(weights, dtype=np.float32)
+    weights = weights / (weights.sum() + 1e-8)
+    train_ds = tf.data.Dataset.sample_from_datasets(
+        ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
+    )
 
     val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
 
@@ -707,11 +514,7 @@ def main():
     backbone = model.layers[1]
     backbone.trainable = False
     
-    # Compile with frozen backbone
-    if USE_FOCAL_COARSE:
-        coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
-    else:
-        coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+    coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
 
     steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
     if steps_per_epoch == 0:
@@ -825,90 +628,17 @@ def main():
 
     # Train with frozen backbone first
     print("Training with frozen backbone...")
-    try:
-        cleanup_memory()  # Clean memory before training
+    cleanup_memory()  # Clean memory before training
         
-        history1 = model.fit(
-            train_ds,
-            validation_data=val_ds,
-            epochs=10,
-            callbacks=callbacks,
-            verbose=1,
-            steps_per_epoch=steps_per_epoch,
-            validation_steps=validation_steps,
-        )
-    except Exception as e:
-        print(f"Frozen backbone training failed: {e}")
-        
-        # Check if it's a CuDNN/GPU issue
-        if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
-            print("Detected CuDNN/GPU issue during fine-tuning. Restarting with CPU-only mode...")
-            restart_with_cpu()
-            
-            # Recreate model for CPU training
-            print("Recreating fine-tuning model for CPU...")
-            model = create_finetuned_model(ssl_model, N_DX_CLASSES, N_LESION_TYPE_CLASSES)
-            
-            # Recompile for CPU
-            if USE_FOCAL_COARSE:
-                coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
-            else:
-                coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-            
-            optimizer = keras.optimizers.AdamW(learning_rate=LR_FINE_TUNE, weight_decay=WEIGHT_DECAY)
-            model.compile(
-                optimizer=optimizer,
-                loss={
-                    "coarse_output": coarse_loss,
-                    "fine_output": utils.masked_sparse_ce_with_oe,
-                },
-                metrics={
-                    "coarse_output": ["sparse_categorical_accuracy"],
-                    "fine_output": ["sparse_categorical_accuracy"],
-                },
-            )
-            
-            # Rebuild datasets with CPU batch size
-            BATCH_SIZE_GPU = 8  # Very small batch size for CPU
-            train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
-                                     fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-            val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
-            steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
-            validation_steps = len(val_df) // BATCH_SIZE_GPU
-            
-            print(f"Retrying fine-tuning with CPU, batch size {BATCH_SIZE_GPU}")
-            history1 = model.fit(
-                train_ds,
-                validation_data=val_ds,
-                epochs=10,
-                callbacks=callbacks,
-                verbose=1,
-                steps_per_epoch=steps_per_epoch,
-                validation_steps=validation_steps,
-            )
-        else:
-            print("Attempting memory cleanup and retry...")
-            cleanup_memory()
-            
-            # Reduce batch size and retry
-            BATCH_SIZE_GPU = 32
-            # Rebuild datasets with smaller batch size
-            train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
-                                     fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-            val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
-            steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
-            validation_steps = len(val_df) // BATCH_SIZE_GPU
-            
-            print(f"Retrying with batch size {BATCH_SIZE_GPU}")
-            history1 = model.fit(
-                train_ds,
-                validation_data=val_ds,
-                epochs=10,
-                callbacks=callbacks,
-                verbose=1,
-                steps_per_epoch=steps_per_epoch,
-                validation_steps=validation_steps,
-            )
+    history1 = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=10,
+        callbacks=callbacks,
+        verbose=1,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps,
+    )
 
     # Unfreeze backbone and continue training
     backbone.trainable = True
@@ -926,9 +656,7 @@ def main():
 
     print("Training with unfrozen backbone...")
     cleanup_memory()  # Clean memory before unfrozen training
-    
-    try:
-        history2 = model.fit(
+    history2 = model.fit(
             train_ds,
             validation_data=val_ds,
             epochs=FINE_TUNE_EPOCHS-10,
@@ -938,56 +666,7 @@ def main():
             steps_per_epoch=steps_per_epoch,
             validation_steps=validation_steps,
         )
-    except Exception as e:
-        print(f"Unfrozen backbone training failed: {e}")
-        
-        # Check if it's a CuDNN/GPU issue
-        if "DNN library initialization failed" in str(e) or "CuDNN" in str(e):
-            print("Detected CuDNN/GPU issue during unfrozen training. Restarting with CPU-only mode...")
-            restart_with_cpu()
-            
-            # Further reduce batch size for CPU
-            BATCH_SIZE_GPU = 4  # Very small batch size for CPU
-            train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
-                                     fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-            val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
-            steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
-            validation_steps = len(val_df) // BATCH_SIZE_GPU
-            
-            print(f"Retrying unfrozen training with CPU, batch size {BATCH_SIZE_GPU}")
-            history2 = model.fit(
-                train_ds,
-                validation_data=val_ds,
-                epochs=FINE_TUNE_EPOCHS-10,
-                initial_epoch=10,
-                callbacks=callbacks,
-                verbose=1,
-                steps_per_epoch=steps_per_epoch,
-                validation_steps=validation_steps,
-            )
-        else:
-            print("Attempting memory cleanup and retry...")
-            cleanup_memory()
-            
-            # Further reduce batch size if needed
-            BATCH_SIZE_GPU = 16  # Even smaller batch size
-            train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
-                                     fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-            val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
-            steps_per_epoch = len(train_df) // BATCH_SIZE_GPU
-            validation_steps = len(val_df) // BATCH_SIZE_GPU
-            
-            print(f"Retrying with batch size {BATCH_SIZE_GPU}")
-            history2 = model.fit(
-                train_ds,
-                validation_data=val_ds,
-                epochs=FINE_TUNE_EPOCHS-10,
-                initial_epoch=10,
-                callbacks=callbacks,
-                verbose=1,
-                steps_per_epoch=steps_per_epoch,
-                validation_steps=validation_steps,
-            )
+    
 
     # Combine histories
     combined_history = {}
@@ -999,17 +678,6 @@ def main():
         json.dump(combined_history, f)
     
     print(f"\nFine-tuning complete! Model saved to '{FINE_TUNE_OUTDIR}'")
-    print("Note: Use a separate evaluation script with the test set for unbiased evaluation")
     
-    # ==================== COMPLETION ====================
-    print("\n" + "="*60)
-    print("SSL + FINE-TUNING PIPELINE COMPLETE")
-    print("="*60)
-    print("✅ SSL pre-training completed")
-    print("✅ Fine-tuning completed")
-    print("✅ Model saved and ready for evaluation")
-    print("📝 Next step: Run evaluation script on test set")
-    print("="*60)
-
 if __name__ == "__main__":
     main()

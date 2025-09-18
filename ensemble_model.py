@@ -1,5 +1,3 @@
-# src/ensemble_model.py
-# -*- coding: utf-8 -*-
 """
 Ensemble Learning with Architectural Diversity
 Implements multiple backbone architectures with ensemble methods
@@ -10,8 +8,7 @@ Usage:
 """
 
 import os
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN warnings
-# GPU memory optimization
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
 import argparse
@@ -21,17 +18,12 @@ import json, time
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-# Disable mixed precision for CPU training (can cause slowdowns)
-# tf.keras.mixed_precision.set_global_policy('mixed_float16')
 from tensorflow import keras
 from tensorflow.keras import layers
 from sklearn.model_selection import train_test_split
-# Removed sklearn imports - evaluation will be done in separate script
 
-# -------------------- Repro --------------------
 utils.set_seed(utils.SEED)
 
-# Configure GPU memory growth for better memory management
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
@@ -40,8 +32,6 @@ if gpus:
     except RuntimeError as e:
         print(f"GPU memory growth configuration failed: {e}")
 
-# -------------------- Config --------------------
-# Use constants from utils
 DATA_DIR = utils.DATA_DIR
 PREPARED_CSV = utils.PREPARED_CSV
 IMAGE_PATH = utils.IMAGE_PATH
@@ -78,7 +68,6 @@ MODEL_CONFIGS = {
     }
 }
 
-# Use constants from utils
 USE_FOCAL_COARSE = utils.USE_FOCAL_COARSE
 FOCAL_GAMMA = utils.FOCAL_GAMMA
 USE_SAMPLE_WEIGHTS = utils.USE_SAMPLE_WEIGHTS
@@ -114,33 +103,28 @@ def train_individual_model(backbone_type, train_df, val_df, model_dir):
     minority_fine_names = ["df", "vasc", "other", "no_lesion"]
     minority_fine_ids = {DX_TO_ID[n] for n in minority_fine_names if n in DX_TO_ID}
 
-    if USE_OVERSAMPLING:
-        ds_parts = []
-        weights = []
-        for c in range(N_LESION_TYPE_CLASSES):
-            sub = train_df[train_df["head1_idx"] == c]
-            if len(sub) == 0:
-                continue
-            ds_c = utils.build_dataset(sub, is_training=True, backbone_type=backbone_type, 
-                               minority_fine_ids=minority_fine_ids, 
-                               fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-            ds_parts.append(ds_c)
-            weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
-        weights = np.asarray(weights, dtype=np.float32)
-        wsum = weights.sum()
-        if not ds_parts:
-            raise ValueError("Oversampling enabled but no per-class datasets were built.")
-        if wsum <= 1e-8:
-            weights = np.full(len(ds_parts), 1.0 / len(ds_parts), dtype=np.float32)
-        else:
-            weights = weights / wsum
-        train_ds = tf.data.Dataset.sample_from_datasets(
-            ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
-        )
+    ds_parts = []
+    weights = []
+    for c in range(N_LESION_TYPE_CLASSES):
+        sub = train_df[train_df["head1_idx"] == c]
+        if len(sub) == 0:
+            continue
+        ds_c = utils.build_dataset(sub, is_training=True, backbone_type=backbone_type, 
+                            minority_fine_ids=minority_fine_ids, 
+                            fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+        ds_parts.append(ds_c)
+        weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
+    weights = np.asarray(weights, dtype=np.float32)
+    wsum = weights.sum()
+    if not ds_parts:
+        raise ValueError("Oversampling enabled but no per-class datasets were built.")
+    if wsum <= 1e-8:
+        weights = np.full(len(ds_parts), 1.0 / len(ds_parts), dtype=np.float32)
     else:
-        train_ds = utils.build_dataset(train_df, is_training=True, backbone_type=backbone_type,
-                                 minority_fine_ids=minority_fine_ids,
-                                 fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+        weights = weights / wsum
+    train_ds = tf.data.Dataset.sample_from_datasets(
+        ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
+    )
 
     val_ds = utils.build_dataset(val_df, is_training=False, backbone_type=backbone_type, 
                           minority_fine_ids=minority_fine_ids)
@@ -153,11 +137,7 @@ def train_individual_model(backbone_type, train_df, val_df, model_dir):
     print(f"\n{MODEL_CONFIGS[backbone_type]['name']} Model Summary:")
     model.summary()
     
-    # Compile model
-    if USE_FOCAL_COARSE:
-        coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
-    else:
-        coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+    coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
 
     import math
     steps_per_epoch = max(1, math.ceil(len(train_df) / BATCH_SIZE))
@@ -227,7 +207,6 @@ def train_individual_model(backbone_type, train_df, val_df, model_dir):
     print(f"{MODEL_CONFIGS[backbone_type]['name']} training complete. Model saved to '{model_dir}'.")
     return model
 
-
 # -------------------- Ensemble Methods --------------------
 # Use utils ensemble functions instead of custom implementations
 
@@ -235,17 +214,17 @@ def create_stacking_ensemble(models, train_df, val_df):
     """Create a stacking ensemble that learns to combine model predictions."""
     print("\nCreating stacking ensemble...")
     
-    # Get predictions from all models on TRAINING set for meta-training (not validation!)
+    # Get predictions from all models on TRAINING set for meta-training
     # Build dataset per model to ensure correct preprocessing
-    all_fine_preds = []
     all_coarse_preds = []
-    
+    all_fine_preds = []
     for backbone_type, model in models.items():
         print(f"Getting training predictions from {backbone_type} for stacking...")
         train_ds = utils.build_dataset(train_df, is_training=False, backbone_type=backbone_type)
         preds = model.predict(train_ds, verbose=0)
-        all_fine_preds.append(preds[1])  # Fine predictions
         all_coarse_preds.append(preds[0])  # Coarse predictions
+        all_fine_preds.append(preds[1])  # Fine predictions
+        
     
     # Stack predictions: shape (n_samples, n_models * n_classes)
     stacked_fine = np.concatenate(all_fine_preds, axis=1)
@@ -255,9 +234,7 @@ def create_stacking_ensemble(models, train_df, val_df):
     expected = len(train_df)
     assert stacked_fine.shape[0] == expected, f"Fine predictions shape {stacked_fine.shape[0]} != expected {expected}"
     assert stacked_coarse.shape[0] == expected, f"Coarse predictions shape {stacked_coarse.shape[0]} != expected {expected}"
-    
-    print(f"Stacked features shape - Fine: {stacked_fine.shape}, Coarse: {stacked_coarse.shape}")
-    
+        
     # Create meta-model
     fine_input = keras.Input(shape=(stacked_fine.shape[1],), name='fine_features')
     coarse_input = keras.Input(shape=(stacked_coarse.shape[1],), name='coarse_features')
@@ -288,8 +265,9 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
     print("\nTraining stacking ensemble meta-model...")
     
     # Prepare TRAINING targets
-    fine_true_train = train_df['head2_idx'].fillna(-1).astype('int32').values
     coarse_true_train = train_df['head1_idx'].astype('int32').values
+    fine_true_train = train_df['head2_idx'].fillna(-1).astype('int32').values
+    
     
     # Create valid mask for fine-grained labels (training)
     mask_train = fine_true_train >= 0
@@ -299,13 +277,13 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
     stacked_coarse_train_valid = stacked_coarse_train[mask_train]
     
     # Prepare VALIDATION targets for validation during training
-    fine_true_val = val_df['head2_idx'].fillna(-1).astype('int32').values
     coarse_true_val = val_df['head1_idx'].astype('int32').values
+    fine_true_val = val_df['head2_idx'].fillna(-1).astype('int32').values
     
     # Create valid mask for fine-grained labels (validation)
     mask_val = fine_true_val >= 0
-    fine_true_val_valid = fine_true_val[mask_val]
     coarse_true_val_valid = coarse_true_val[mask_val]
+    fine_true_val_valid = fine_true_val[mask_val]
     
     # Get validation predictions from all models for validation during meta-training
     val_fine_preds = []
@@ -331,10 +309,7 @@ def train_stacking_ensemble(meta_model, stacked_coarse_train, stacked_fine_train
     coarse_alpha = utils.calculate_focal_alpha(coarse_counts)
     
     # Compile meta-model
-    if USE_FOCAL_COARSE:
-        coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
-    else:
-        coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+    coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
     
     # Add cosine decay learning rate schedule for meta-model
     import math
@@ -506,25 +481,11 @@ def main():
     df = pd.read_csv(PREPARED_CSV)
     processed_df = utils.process_labels(df)
 
-    # Split data - Use proper 3-way split (test set will be used later for evaluation)
-    if "split" in processed_df.columns:
-        train_df = processed_df[processed_df.split == "train"].copy()
-        val_df = processed_df[processed_df.split == "val"].copy()
-        # test_df will be used later in evaluation script
-        print("Using existing train/val/test split")
-        print(f"Train: {len(train_df)}, Val: {len(val_df)}")
-        print("Note: Test set will be used later for unbiased evaluation")
-    else:
-        # Fallback: Create 3-way split if no split column exists
-        train_val_df, test_df = train_test_split(
-            processed_df, test_size=0.15, stratify=processed_df['head1_idx'], random_state=utils.SEED
-        )
-        train_df, val_df = train_test_split(
-            train_val_df, test_size=0.2, stratify=train_val_df['head1_idx'], random_state=utils.SEED
-        )
-        print("Created stratified train/val/test split")
-        print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
-        print("Note: Test set will be used later for unbiased evaluation")
+    # Split data - Use proper 3-way split
+    train_df = processed_df[processed_df.split == "train"].copy()
+    val_df = processed_df[processed_df.split == "val"].copy()
+    print("Using existing train/val/test split")
+    print(f"Train: {len(train_df)}, Val: {len(val_df)}")
 
     # Load or train individual models
     models = {}
@@ -538,7 +499,7 @@ def main():
             for backbone_type, model in models.items():
                 print(f"- {MODEL_CONFIGS[backbone_type]['name']}")
         except FileNotFoundError as e:
-            print(f"\n❌ Error: {e}")
+            print(f"\nError: {e}")
             print("Please train individual models first by running:")
             print("python ensemble_model.py")
             return
@@ -564,11 +525,11 @@ def main():
                         # Copy to ensemble directory for consistency
                         model_dir.mkdir(exist_ok=True, parents=True)
                         model.save(str(model_dir / "efficientnet_best_model.keras"))
-                        print(f"✓ EfficientNetB1 model loaded and saved to {model_dir}")
+                        print(f"EfficientNetB1 model loaded and saved to {model_dir}")
                         models[backbone_type] = model
                         continue
                     except Exception as e:
-                        print(f"⚠️  Failed to load existing model: {e}")
+                        print(f"Failed to load existing model: {e}")
                         print("Falling back to training from scratch...")
             
             # Train other models or EfficientNet if loading failed
@@ -579,25 +540,12 @@ def main():
         for backbone_type, model in models.items():
             print(f"- {MODEL_CONFIGS[backbone_type]['name']}")
         
-    # Create and train stacking ensemble
-    print("\n" + "="*40)
-    print("CREATING STACKING ENSEMBLE")
-    print("="*40)
-    
+    # Create and train stacking ensemble   
     meta_model, stacked_coarse, stacked_fine = create_stacking_ensemble(models, train_df, val_df)
     _, stacking_dir = train_stacking_ensemble(meta_model, stacked_coarse, stacked_fine, train_df, val_df, models)
     
-    print("\n" + "="*60)
-    print("ENSEMBLE LEARNING PIPELINE COMPLETED")
-    print("="*60)
     print(f"Individual models saved to: {INDIVIDUAL_OUTDIR}")
     print(f"Stacking ensemble saved to: {stacking_dir}")
-    print("Note: Test set will be used later for unbiased evaluation")
-    print("\nModels used:")
-    for backbone_type in MODEL_CONFIGS.keys():
-        print(f"- {MODEL_CONFIGS[backbone_type]['name']}")
-    print("\nEnsemble method:")
-    print("- Stacking ensemble (saved as single model)")
 
 if __name__ == "__main__":
     main()

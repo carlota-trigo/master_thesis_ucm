@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-SSL + ResNet Hybrid Model Deployment - Flask App
-"""
-
 import os
 import sys
 import numpy as np
@@ -13,60 +8,41 @@ import logging
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
 
-# Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-try:
-    import utils
-    print("✓ Successfully imported utils module")
-    DX_CLASSES = utils.DX_CLASSES
-    LESION_TYPE_CLASSES = utils.LESION_TYPE_CLASSES
-    IMG_SIZE = utils.IMG_SIZE
-except ImportError as e:
-    print(f"⚠ Warning: Could not import utils: {e}")
-    # Fallback configurations
-    DX_CLASSES = ['nv', 'mel', 'bkl', 'bcc', 'scc_akiec', 'vasc', 'df', 'other', 'no_lesion']
-    LESION_TYPE_CLASSES = ["benign", "malignant", "no_lesion"]
-    IMG_SIZE = 224
+import utils
+DX_CLASSES = utils.DX_CLASSES
+LESION_TYPE_CLASSES = utils.LESION_TYPE_CLASSES
+IMG_SIZE = utils.IMG_SIZE
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'ssl-deployment-key'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-# Configuration
 UPLOAD_FOLDER = Path('uploads')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'}
 SSL_MODEL_PATH = Path('../outputs/ssl_finetuned/ssl_finetuned_best_model.keras')
 RESNET_MODEL_PATH = Path('../outputs/individual_models/resnet/resnet_best_model.keras')
 
-# Create upload folder
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 
-# Global model variables
 ssl_model = None
 resnet_model = None
 
 def allowed_file(filename):
-    """Check if file extension is allowed"""
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def format_class_name(class_name):
-    """Format class names for better display"""
     if class_name == "no_lesion":
         return "No Lesion"
     return class_name
 
 def load_models():
-    """Load both SSL and ResNet models"""
     global ssl_model, resnet_model
-    
-    # Load SSL model (main model)
     try:
         if not SSL_MODEL_PATH.exists():
             logger.error(f"SSL model file not found: {SSL_MODEL_PATH}")
@@ -79,7 +55,7 @@ def load_models():
             compile=False
         )
         
-        logger.info("✓ SSL model loaded successfully")
+        logger.info("SSL model loaded successfully")
         
     except Exception as e:
         logger.error(f"Error loading SSL model: {e}")
@@ -106,7 +82,7 @@ def load_models():
                 compile=False
             )
             
-            logger.info("✓ ResNet model loaded successfully for OOD detection")
+            logger.info("ResNet model loaded successfully")
         
     except Exception as e:
         logger.warning(f"Error loading ResNet model: {e}")
@@ -168,8 +144,8 @@ def predict_image(image_path):
         ssl_predictions = ssl_model.predict(ssl_image_array, verbose=0)
         
         # Extract SSL predictions
-        coarse_pred = ssl_predictions[0][0]  # [benign, malignant, no_lesion]
-        fine_pred = ssl_predictions[1][0]    # [nv, mel, bkl, bcc, scc_akiec, vasc, df, other, no_lesion]
+        coarse_pred = ssl_predictions[0][0]
+        fine_pred = ssl_predictions[1][0]
         
         # Apply softmax
         coarse_probs = tf.nn.softmax(coarse_pred).numpy()
@@ -203,42 +179,36 @@ def predict_image(image_path):
             'method': 'disabled'
         }
         
-        if resnet_model is not None:
-            try:
-                # Preprocess image for ResNet
-                resnet_image_array = preprocess_image_for_resnet(image_path)
-                
-                # Make ResNet prediction for OOD detection
-                resnet_predictions = resnet_model.predict(resnet_image_array, verbose=0)
-                
-                # Extract ResNet predictions
-                resnet_coarse_pred = resnet_predictions[0][0]
-                resnet_fine_pred = resnet_predictions[1][0]
-                
-                # Apply softmax
-                resnet_coarse_probs = tf.nn.softmax(resnet_coarse_pred).numpy()
-                resnet_fine_probs = tf.nn.softmax(resnet_fine_pred).numpy()
-                
-                # Calculate MSP (Maximum Softmax Probability) for OOD detection
-                resnet_coarse_msp = np.max(resnet_coarse_probs)
-                resnet_fine_msp = np.max(resnet_fine_probs)
-                resnet_msp = max(resnet_coarse_msp, resnet_fine_msp)
-                
-                # Calculate OOD score (higher = more OOD)
-                ood_score = 1.0 - resnet_msp
-                threshold = 0.7
-                is_ood = resnet_msp < threshold
-                
-                ood_detection = {
-                    'is_out_of_distribution': bool(is_ood),
-                    'ood_score': float(ood_score),
-                    'threshold': threshold,
-                    'method': 'resnet_msp'
-                }
-                
-            except Exception as e:
-                logger.warning(f"ResNet OOD detection failed: {e}")
-                ood_detection['method'] = 'failed'
+        # Preprocess image for ResNet
+        resnet_image_array = preprocess_image_for_resnet(image_path)
+        
+        # Make ResNet prediction for OOD detection
+        resnet_predictions = resnet_model.predict(resnet_image_array, verbose=0)
+        
+        # Extract ResNet predictions
+        resnet_coarse_pred = resnet_predictions[0][0]
+        resnet_fine_pred = resnet_predictions[1][0]
+        
+        # Apply softmax
+        resnet_coarse_probs = tf.nn.softmax(resnet_coarse_pred).numpy()
+        resnet_fine_probs = tf.nn.softmax(resnet_fine_pred).numpy()
+        
+        # Calculate MSP (Maximum Softmax Probability) for OOD detection
+        resnet_coarse_msp = np.max(resnet_coarse_probs)
+        resnet_fine_msp = np.max(resnet_fine_probs)
+        resnet_msp = max(resnet_coarse_msp, resnet_fine_msp)
+        
+        # Calculate OOD score (higher = more OOD)
+        ood_score = 1.0 - resnet_msp
+        threshold = 0.7
+        is_ood = resnet_msp < threshold
+        
+        ood_detection = {
+            'is_out_of_distribution': bool(is_ood),
+            'ood_score': float(ood_score),
+            'threshold': threshold,
+            'method': 'resnet_msp'
+        }
         
         # Determine reliability based on confidence and OOD status
         is_reliable = overall_confidence > 0.7 and not ood_detection['is_out_of_distribution']

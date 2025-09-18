@@ -1,8 +1,5 @@
-# src/base_model.py
-# -*- coding: utf-8 -*-
 import os
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN warnings
-# GPU memory optimization
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
 import utils
@@ -11,17 +8,13 @@ import json, os, time
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-# Disable mixed precision for CPU training (can cause slowdowns)
-# tf.keras.mixed_precision.set_global_policy('mixed_float16')
 from tensorflow import keras
 from tensorflow.keras import layers
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 
-# -------------------- Repro --------------------
 utils.set_seed(utils.SEED)
 
-# Configure GPU memory growth for better memory management
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
@@ -30,8 +23,6 @@ if gpus:
     except RuntimeError as e:
         print(f"GPU memory growth configuration failed: {e}")
 
-# -------------------- Config --------------------
-# Use constants from utils
 DATA_DIR = utils.DATA_DIR
 PREPARED_CSV = utils.PREPARED_CSV
 IMAGE_PATH = utils.IMAGE_PATH
@@ -39,12 +30,11 @@ IMG_SIZE = utils.IMG_SIZE
 BATCH_SIZE = utils.BATCH_SIZE
 OUTDIR = Path("outputs/base_model")
 
-EPOCHS = 25  # Reduced for faster training                  
-LR = 1e-5                   
+EPOCHS = 25
+LR = 1e-5
 WEIGHT_DECAY = 1e-4
 PRETRAINED = True
 
-# Constants are defined in utils.py
 USE_FOCAL_COARSE = utils.USE_FOCAL_COARSE
 FOCAL_GAMMA = utils.FOCAL_GAMMA
 USE_SAMPLE_WEIGHTS = utils.USE_SAMPLE_WEIGHTS
@@ -64,57 +54,36 @@ N_LESION_TYPE_CLASSES = utils.N_LESION_TYPE_CLASSES
 DX_TO_ID = utils.DX_TO_ID
 LESION_TO_ID = utils.LESION_TO_ID
 
-# -------------------- Main --------------------
 def main():
     OUTDIR.mkdir(exist_ok=True, parents=True)
     
-    # Load and prepare data
     df = pd.read_csv(PREPARED_CSV)
     processed_df = utils.process_labels(df)
 
-    # Split data - Use proper 3-way split (test set will be used later for evaluation)
-    if "split" in processed_df.columns:
-        train_df = processed_df[processed_df.split == "train"].copy()
-        val_df = processed_df[processed_df.split == "val"].copy()
-        # test_df will be used later in evaluation script
-        print("Using existing train/val/test split")
-        print(f"Train: {len(train_df)}, Val: {len(val_df)}")
-        print("Note: Test set will be used later for unbiased evaluation")
-    else:
-        # Fallback: Create 3-way split if no split column exists
-        train_val_df, test_df = train_test_split(
-            processed_df, test_size=0.15, stratify=processed_df['head1_idx'], random_state=utils.SEED
-        )
-        train_df, val_df = train_test_split(
-            train_val_df, test_size=0.2, stratify=train_val_df['head1_idx'], random_state=utils.SEED
-        )
-        print("Created stratified train/val/test split")
-        print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
-        print("Note: Test set will be used later for unbiased evaluation")
+    train_df = processed_df[processed_df.split == "train"].copy()
+    val_df = processed_df[processed_df.split == "val"].copy()
+    print("Using existing train/val/test split")
+    print(f"Train: {len(train_df)}, Val: {len(val_df)}")
+    print("Note: Test set will be used later for unbiased evaluation")
    
-    # Build datasets using utils
     minority_fine_names = ["df", "vasc", "other", "no_lesion"]
     minority_fine_ids = {DX_TO_ID[n] for n in minority_fine_names if n in DX_TO_ID}
 
-    if USE_OVERSAMPLING:
-        ds_parts = []
-        weights = []
-        for c in [0, 1, 2]:
-            sub = train_df[train_df["head1_idx"] == c]
-            if len(sub) == 0:
-                continue
-            ds_c = utils.build_dataset(sub, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids, 
-                               fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
-            ds_parts.append(ds_c)
-            weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
-        weights = np.asarray(weights, dtype=np.float32)
-        weights = weights / (weights.sum() + 1e-8)
-        train_ds = tf.data.Dataset.sample_from_datasets(
-            ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
-        )
-    else:
-        train_ds = utils.build_dataset(train_df, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids,
-                                 fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+    ds_parts = []
+    weights = []
+    for c in [0, 1, 2]:
+        sub = train_df[train_df["head1_idx"] == c]
+        if len(sub) == 0:
+            continue
+        ds_c = utils.build_dataset(sub, is_training=True, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids, 
+                            fine_oversampling=FINE_MINORITY_OVERSAMPLING if USE_FINE_OVERSAMPLING else None)
+        ds_parts.append(ds_c)
+        weights.append(OVERSAMPLE_WEIGHTS.get(str(c), 0.0))
+    weights = np.asarray(weights, dtype=np.float32)
+    weights = weights / (weights.sum() + 1e-8)
+    train_ds = tf.data.Dataset.sample_from_datasets(
+        ds_parts, weights=weights.tolist(), stop_on_empty_dataset=False
+    )
 
     val_ds = utils.build_dataset(val_df, is_training=False, backbone_type='efficientnet', minority_fine_ids=minority_fine_ids)
 
@@ -123,7 +92,7 @@ def main():
     # Create model using utils
     model = utils.create_two_head_model('efficientnet', N_DX_CLASSES, N_LESION_TYPE_CLASSES)
     print(model.summary())
-    # Use a simple cosine decay schedule for better compatibility with mixed precision
+
     steps_per_epoch = len(train_df) // BATCH_SIZE
     total_steps = EPOCHS * steps_per_epoch
     
@@ -139,11 +108,7 @@ def main():
     coarse_counts = utils.counts_from_labels(train_df["head1_idx"], N_LESION_TYPE_CLASSES, (0, N_LESION_TYPE_CLASSES))
     coarse_alpha = utils.calculate_focal_alpha(coarse_counts)
     
-    # Compile model
-    if USE_FOCAL_COARSE:
-        coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
-    else:
-        coarse_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+    coarse_loss = utils.sparse_categorical_focal_loss(gamma=FOCAL_GAMMA, alpha=coarse_alpha)
     
     model.compile(
         optimizer=optimizer,
